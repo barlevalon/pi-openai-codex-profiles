@@ -1,0 +1,7 @@
+{
+  "name": "pi-openai-codex-profiles",
+  "private": true,
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.85.1"
+  }
+}
