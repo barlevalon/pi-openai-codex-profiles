@@ -1,7 +1,16 @@
 {
   "name": "pi-openai-codex-profiles",
+  "version": "0.1.0",
   "private": true,
-  "dependencies": {
-    "@earendil-works/pi-ai": "0.85.1"
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "test": "node --test test/package.test.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
   }
 }
