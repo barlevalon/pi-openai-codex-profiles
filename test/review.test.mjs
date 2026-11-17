@@ -12,7 +12,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const token = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "personal" } })).toString("base64url")}.fake`;
 const sse = events => events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
 
-for (const finish of ["copilot", "length"]) test(`headless review discloses Codex contribution when finishing with ${finish}`, { timeout: 25000 }, async t => {
+for (const mode of ["json", "print"]) for (const finish of ["copilot", "length"]) test(`headless ${mode} review discloses Codex contribution when finishing with ${finish}`, { timeout: 25000 }, async t => {
   const directory = mkdtempSync(join(tmpdir(), "review-notice-"));
   const requests = [];
   let copilotRequests = 0;
@@ -29,7 +29,7 @@ for (const finish of ["copilot", "length"]) test(`headless review discloses Code
       } else {
         response.writeHead(200, { "content-type": "text/event-stream" });
         response.end(sse([
-          { type: "message_start", message: { id: "final", type: "message", role: "assistant", model: "claude-opus-5.5", content: [], usage: { input_tokens: 2, output_tokens: 0 } } },
+          { type: "message_start", message: { id: "final", type: "message", role: "assistant", model: "claude-sonnet-5.5", content: [], usage: { input_tokens: 2, output_tokens: 0 } } },
           { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
           { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "COPILOT-FINAL" } },
           { type: "content_block_stop", index: 0 },
@@ -63,6 +63,7 @@ for (const finish of ["copilot", "length"]) test(`headless review discloses Code
   await once(server, "listening");
   t.after(() => { server.closeAllConnections(); server.close(); rmSync(directory, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${server.address().port}`;
+  writeFileSync(join(directory, "codex-routing-policy.json"), JSON.stringify({ version: 1, accountOrder: ["personal"], review: { copilotModel: "claude-sonnet-5.5", codexFallbackModel: "gpt-5.6-luna" } }));
   writeFileSync(join(directory, "auth.json"), JSON.stringify({
     "openai-codex:personal": { type: "oauth", access: token, refresh: "fake", expires: Date.now() + 86400000 },
     "github-copilot": { type: "api_key", key: "fake-copilot" },
@@ -72,7 +73,7 @@ for (const finish of ["copilot", "length"]) test(`headless review discloses Code
     "github-copilot": { baseUrl: `${base}/copilot` },
   } }));
   writeFileSync(join(directory, "settings.json"), JSON.stringify({ retry: { enabled: false }, compaction: { enabled: false } }));
-  const child = spawn("pi", ["--offline", "--no-mcp", "--no-context-files", "--no-approve", "--mode", "json", "--print", "--no-session", "--thinking", "high", "--model", "profile-review/claude-opus-5.5", "-e", join(root, "index.ts"), "-e", join(root, "test/host-probe.ts"), "--", "local fixture review"], {
+  const child = spawn("pi", ["--offline", "--no-mcp", "--no-context-files", "--no-approve", "--mode", mode === "print" ? "text" : mode, "--print", "--no-session", "--thinking", "high", "--model", "profile-review/claude-sonnet-5.5", "-e", join(root, "index.ts"), "-e", join(root, "test/host-probe.ts"), "--", "local fixture review"], {
     cwd: directory, env: { ...process.env, PI_CODING_AGENT_DIR: directory, ROUTING_SCENARIO: JSON.stringify({ agent: true, review: true }) },
     timeout: 15000, stdio: ["ignore", "pipe", "pipe"],
   });
@@ -82,12 +83,18 @@ for (const finish of ["copilot", "length"]) test(`headless review discloses Code
   child.stderr.on("data", chunk => { stderr += chunk; });
   const exited = once(child, "exit");
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
-  assert.deepEqual(await exited, [0, null], stderr);
+  assert.deepEqual(await exited, [mode === "print" && finish === "length" ? 1 : 0, null], stderr);
+  assert.deepEqual(requests, finish === "length" ? ["copilot", "personal"] : ["copilot", "personal", "copilot"]);
+  assert.doesNotMatch(stdout, /diversity/i);
+  if (mode === "print") {
+    assert.match(stdout, /This review used the configured Codex fallback after Copilot quota exhaustion/);
+    assert.match(stdout, finish === "length" ? /TRUNCATED/ : /COPILOT-FINAL/);
+    return;
+  }
   const messages = stdout.trim().split("\n").map(line => JSON.parse(line)).filter(record => record.type === "message_end" && record.message.role === "assistant").map(record => record.message);
   const final = messages.at(-1);
-  assert.match(final.content[0].text, /This review used Codex after Copilot quota exhaustion/);
+  assert.match(final.content[0].text, /This review used the configured Codex fallback after Copilot quota exhaustion/);
   assert.equal(final.stopReason, finish === "length" ? "length" : "stop");
   assert.equal(final.provider, finish === "length" ? "openai-codex:personal" : "github-copilot");
-  assert.deepEqual(requests, finish === "length" ? ["copilot", "personal"] : ["copilot", "personal", "copilot"]);
   if (finish === "copilot") assert.ok(final.content.some(part => part.type === "text" && part.text === "COPILOT-FINAL"));
 });

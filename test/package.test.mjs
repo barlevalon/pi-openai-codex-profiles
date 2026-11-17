@@ -35,11 +35,9 @@ test("Pi package uses host dependencies and registers both Codex profiles", { ti
           return { id, models: provider?.getModels().map(model => ({ id: model.id, provider: model.provider })), all: provider?.getAllModels?.().map(model => ({ id: model.id, provider: model.provider })) };
         }));
         const codex = ctx.modelRegistry.getProvider("openai-codex").getModels();
-        const opus = ctx.modelRegistry.find("github-copilot", "claude-opus-5.5");
-        const fallback = ctx.modelRegistry.find("openai-codex:personal", "gpt-6.1-sol");
-        const review = ctx.modelRegistry.find("profile-review", "claude-opus-5.5");
+        const review = ctx.modelRegistry.getAll().filter(model => model.provider === "profile-review");
         const shape = model => ({ id: model.id, input: model.input, levels: getSupportedThinkingLevels(model), contextWindow: model.contextWindow, maxTokens: model.maxTokens, inputLimits: model.inputLimits });
-        pi.appendEntry("routing-catalog-test", { native: codex.map(shape), policy: codex.map(model => shape(ctx.modelRegistry.find("codex-policy", model.id))), opus: shape(opus), fallback: shape(fallback), review: shape(review) });
+        pi.appendEntry("routing-catalog-test", { native: codex.map(shape), policy: codex.map(model => shape(ctx.modelRegistry.find("codex-policy", model.id))), review: review.map(shape) });
       });
     }`);
     child = spawn("pi", ["--offline", "--no-mcp", "--no-context-files", "--no-approve", "--mode", "rpc", "--no-session", "-e", probe], {
@@ -87,12 +85,7 @@ test("Pi package uses host dependencies and registers both Codex profiles", { ti
       const { inputLimits: _virtualLimits, ...policy } = catalog.policy[index];
       assert.deepEqual(policy, native);
     }
-    assert.equal(catalog.review.contextWindow, Math.min(catalog.opus.contextWindow, catalog.fallback.contextWindow));
-    assert.equal(catalog.review.maxTokens, Math.min(catalog.opus.maxTokens, catalog.fallback.maxTokens));
-    assert.deepEqual(catalog.review.levels, catalog.opus.levels.filter(level => catalog.fallback.levels.includes(level)));
-    assert.deepEqual(catalog.review.input, catalog.opus.input.filter(input => catalog.fallback.input.includes(input)));
-    assert.deepEqual(catalog.opus.inputLimits, catalog.fallback.inputLimits, "host review targets share image limits");
-    assert.deepEqual(catalog.review.inputLimits, catalog.opus.inputLimits);
+    assert.deepEqual(catalog.review, [], "no policy registers no implicit review");
     child.stdin.end();
     assert.deepEqual(await exited, [0, null]);
     assert.equal(diagnostics.trim(), "", diagnostics);

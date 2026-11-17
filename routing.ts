@@ -2,6 +2,8 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage, AssistantMessageEvent, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { repoScope } from "./scope.ts";
+import type { RoutingPolicy } from "./policy.ts";
+import { reviewModel } from "./review.ts";
 import { quotaResponse, quotaUntil, type quotaStore, type QuotaKey } from "./quota.ts";
 
 type Model = ReturnType<Provider["getModels"]>[number];
@@ -13,6 +15,8 @@ export const WORK = "openai-codex:work";
 export const REVIEW = "profile-review";
 export const POLICY = "codex-policy";
 const COPILOT = "github-copilot";
+type Attempt = { provider: string; id: string; quotaKey: QuotaKey };
+export const REVIEW_NOTICE = "Routing notice. This review used the configured Codex fallback after Copilot quota exhaustion.";
 
 function hasOutput(message: AssistantMessage) {
 	return message.content.length > 0 || Object.values(message.usage).some(value => typeof value === "number" && value > 0)
@@ -34,22 +38,35 @@ function failure(model: Model, error: unknown, aborted = false): AssistantMessag
 	};
 }
 
-export function routing(codex: Provider, copilot: Provider, current: () => ExtensionContext | undefined, quota: Store, notice: (message: string) => void) {
+export function routing(codex: Provider, copilot: Provider, current: () => ExtensionContext | undefined, quota: Store, notice: (message: string) => void, policy: RoutingPolicy) {
 	function context() {
 		const ctx = current();
 		if (!ctx) throw new Error("Codex routing requires an active Pi session");
 		return ctx;
 	}
 	function guardWork() {
-		if (repoScope(current()?.cwd) !== "sibp") throw new Error("Work Codex is restricted to SIBP repositories");
+		if (!current() || !policy.accountOrder.includes("work") || repoScope(current()?.cwd, policy.work) !== "eligible") throw new Error("Work Codex is restricted to configured eligible repositories");
 	}
-	function plan(review = false) {
-		const codexPlan = repoScope(current()?.cwd) === "sibp" && quota.until("work-codex") <= Date.now() ? [WORK, PERSONAL] : [PERSONAL];
-		return review && quota.until("copilot-review") <= Date.now() ? [COPILOT, ...codexPlan] : codexPlan;
+	function plan(id: string, review = false): Attempt[] {
+		if (review) {
+			if (!policy.review || id !== policy.review.copilotModel) throw new Error("Review is not configured for this selection");
+			reviewModel(policy.review, copilot.getModels().find(model => model.id === id), codex.getModels().find(model => model.id === policy.review!.codexFallbackModel));
+		}
+		const order = repoScope(current()?.cwd, policy.work) === "eligible" ? policy.accountOrder : ["personal"] as const;
+		const attempts: Attempt[] = order.map(account => ({ provider: account === "work" ? WORK : PERSONAL, id: review ? policy.review!.codexFallbackModel : id, quotaKey: `${account}-codex` }));
+		if (review) {
+			const primary = target({ provider: COPILOT, id });
+			const advertised = target({ provider: REVIEW, id });
+			for (const attempt of attempts) reviewModel(policy.review, primary, target(attempt), advertised);
+			attempts.unshift({ provider: COPILOT, id, quotaKey: "copilot-review" });
+		}
+		const available = attempts.filter(attempt => quota.until(attempt.quotaKey) <= Date.now());
+		if (!available.length) throw new Error("All configured routing targets are cooling down");
+		return available;
 	}
-	function target(provider: string, id: string) {
+	function target({ provider, id }: { provider: string; id: string }) {
 		const model = context().modelRegistry.find(provider, id);
-		if (!model) throw new Error(`Routing target is not registered: ${provider}/${id}`);
+		if (!model) throw new Error("Configured routing target is not registered");
 		return model;
 	}
 	function stream(source: Model, transcript: Context, options: Options = {}, simple = true, review = false) {
@@ -58,13 +75,13 @@ export function routing(codex: Provider, copilot: Provider, current: () => Exten
 		let partial: AssistantMessage | undefined;
 		(async () => {
 			if (source.provider === WORK) guardWork();
-			const providers = plan(review);
-			for (let index = 0; index < providers.length; index++) {
+			const attempts = plan(source.id, review);
+			for (let index = 0; index < attempts.length; index++) {
 				options.signal?.throwIfAborted();
-				const provider = providers[index];
-				const id = review ? provider === COPILOT ? "claude-opus-5.5" : "gpt-6.1-sol" : source.id;
+				const attempt = attempts[index];
+				const { provider, quotaKey: key } = attempt;
 				const reuseInitial = index === 0 && provider === source.provider;
-				active = reuseInitial ? source : target(provider, id);
+				active = reuseInitial ? source : target(attempt);
 				if (provider === WORK) guardWork();
 				let requestOptions = options;
 				if (!reuseInitial) {
@@ -76,7 +93,6 @@ export function routing(codex: Provider, copilot: Provider, current: () => Exten
 				}
 				options.signal?.throwIfAborted();
 				if (provider === WORK) guardWork();
-				const key: QuotaKey | undefined = provider === WORK ? "work-codex" : provider === COPILOT ? "copilot-review" : undefined;
 				partial = undefined;
 				let state: "before-content" | "committed" | "terminal" = "before-content";
 				let start: AssistantMessageEvent | undefined;
@@ -140,7 +156,7 @@ export function routing(codex: Provider, copilot: Provider, current: () => Exten
 				if (terminal.type === "error" && message) {
 					const emptyQuotaFailure = state === "before-content" && !hasOutput(message) && exhausted;
 					const mayRetry = !hookFailed && !options.signal?.aborted && (terminal.reason !== "aborted" || local.signal.aborted);
-					if (emptyQuotaFailure && mayRetry && index + 1 < providers.length) continue;
+					if (emptyQuotaFailure && mayRetry && index + 1 < attempts.length) continue;
 				}
 				if (terminal.type === "error" && (options.signal?.aborted || local.signal.aborted)) {
 					terminal.reason = options.signal?.aborted ? "aborted" : "error";
@@ -148,14 +164,14 @@ export function routing(codex: Provider, copilot: Provider, current: () => Exten
 				}
 				state = "terminal";
 				if (start) output.push(start);
-				if (review && provider !== COPILOT && (terminal.type === "done" || (message && hasOutput(message)))) notice("Review answered by Codex. Cross-family review diversity is reduced.");
+				if (review && provider !== COPILOT && (terminal.type === "done" || (message && hasOutput(message)))) notice(REVIEW_NOTICE);
 				output.push(terminal);
 				output.end();
 				return;
 			}
 		})().catch(error => {
 			const message = { ...partial, ...failure(active, error, options.signal?.aborted), ...(partial ? { content: partial.content, usage: partial.usage } : {}) };
-			if (review && active.provider !== COPILOT && partial && hasOutput(partial)) notice("Review answered by Codex. Cross-family review diversity is reduced.");
+			if (review && active.provider !== COPILOT && partial && hasOutput(partial)) notice(REVIEW_NOTICE);
 			output.push({ type: "error", reason: message.stopReason === "aborted" ? "aborted" : "error", error: message });
 			output.end();
 		});

@@ -3,7 +3,9 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { quotaStore } from "./quota.ts";
-import { PERSONAL, POLICY, REVIEW, WORK, routing } from "./routing.ts";
+import { PERSONAL, POLICY, REVIEW, REVIEW_NOTICE, WORK, routing } from "./routing.ts";
+import { loadPolicy } from "./policy.ts";
+import { reviewModel } from "./review.ts";
 
 export default function (pi: ExtensionAPI) {
 	const builtins = builtinProviders();
@@ -14,7 +16,8 @@ export default function (pi: ExtensionAPI) {
 		if (current?.hasUI) current.ui.notify(message, "warning");
 		else console.error(message);
 	};
-	const route = routing(codex, copilot, () => current, quotaStore(join(getAgentDir(), "codex-routing"), notice), notice);
+	const policy = loadPolicy(getAgentDir(), notice);
+	const route = routing(codex, copilot, () => current, quotaStore(join(getAgentDir(), "codex-routing"), notice), notice, policy);
 	for (const id of [PERSONAL, WORK]) {
 		const remap = () => codex.getModels().map(model => ({ ...model, provider: id }));
 		const oauth = codex.auth.oauth!;
@@ -41,27 +44,26 @@ export default function (pi: ExtensionAPI) {
 			thinkingLevels: getSupportedThinkingLevels(model), input: model.input,
 			contextWindow: model.contextWindow, maxTokens: model.maxTokens,
 			route(request) {
-				return { model: route.target(route.plan()[0], model.id), thinkingLevel: request.thinkingLevel };
+				return { model: route.target(route.plan(model.id)[0]), thinkingLevel: request.thinkingLevel };
 			},
 		});
 	}
-	const opus = copilot.getModels().find(model => model.id === "claude-opus-5.5")!;
-	const fallback = codex.getModels().find(model => model.id === "gpt-6.1-sol")!;
-	const levels = getSupportedThinkingLevels(opus).filter(level => getSupportedThinkingLevels(fallback).includes(level));
-	const allLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-	const reviewModel = {
-		...opus, provider: REVIEW, name: "Opus review with Codex quota fallback",
-		input: opus.input.filter(input => fallback.input.includes(input)),
-		contextWindow: Math.min(opus.contextWindow, fallback.contextWindow),
-		maxTokens: Math.min(opus.maxTokens, fallback.maxTokens),
-		thinkingLevelMap: Object.fromEntries(allLevels.map(level => [level, levels.includes(level) ? opus.thinkingLevelMap?.[level] ?? level : null])),
-	};
-	pi.registerProvider({
-		id: REVIEW, name: "Profile review", getModels: () => [reviewModel], getAllModels: () => [reviewModel],
-		auth: { apiKey: { name: "Review routing", async resolve() { return { auth: {}, source: "routing" }; } } },
-		stream() { throw new Error("profile-review requires provider-neutral streamSimple options"); },
-		streamSimple: (model, context, options) => route.stream(model, context, options, true, true),
-	});
+	if (policy.review) {
+		try {
+			const model = reviewModel(policy.review, copilot.getModels().find(model => model.id === policy.review!.copilotModel), codex.getModels().find(model => model.id === policy.review!.codexFallbackModel));
+			pi.registerProvider({
+				id: REVIEW, name: "Profile review", getModels: () => [model], getAllModels: () => [model],
+				auth: { apiKey: { name: "Review routing", async resolve() { return { auth: {}, source: "routing" }; } } },
+				stream() { throw new Error("profile-review requires provider-neutral streamSimple options"); },
+				streamSimple: (source, context, options) => route.stream(source, context, options, true, true),
+			});
+		} catch {
+			pi.registerVirtualModel({
+				provider: REVIEW, id: policy.review.copilotModel, name: "Configured review unavailable",
+				route() { throw new Error("Configured review targets are unavailable or incompatible"); },
+			});
+		}
+	}
 	async function normalize(ctx: ExtensionContext) {
 		current = ctx;
 		if (ctx.model?.provider !== PERSONAL && ctx.model?.provider !== WORK) return;
@@ -86,7 +88,7 @@ export default function (pi: ExtensionAPI) {
 		return {
 			message: {
 				...message,
-				content: [{ type: "text", text: "Routing notice. This review used Codex after Copilot quota exhaustion. Cross-family diversity is reduced." }, ...message.content],
+				content: [{ type: "text", text: REVIEW_NOTICE }, ...message.content],
 			},
 		};
 	});

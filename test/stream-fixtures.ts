@@ -4,10 +4,11 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { quotaStore } from "../quota.ts";
 import { routing } from "../routing.ts";
+import { loadPolicy } from "../policy.ts";
 
 export async function streamFixtures(ctx) {
 	const native = builtinProviders().find(provider => provider.id === "openai-codex")!;
-	const source = ctx.modelRegistry.find("openai-codex:work", "gpt-6.1-sol");
+	const source = ctx.modelRegistry.find("openai-codex:work", "gpt-5.6-luna");
 	for (const mode of ["mutation", "usage", "raw-content", "hook-mutation", "provider-abort", "malformed", "scope-change", "unbound"]) {
 		let current = ctx;
 		let sends = 0;
@@ -44,7 +45,7 @@ export async function streamFixtures(ctx) {
 				})();
 			},
 		};
-		const router = routing(raw, raw, () => current, quotaStore(join(getAgentDir(), `stream-${mode}`), assert.fail), assert.fail);
+		const router = routing(raw, raw, () => current, quotaStore(join(getAgentDir(), `stream-${mode}`), assert.fail), assert.fail, loadPolicy(getAgentDir(), assert.fail));
 		if (mode === "unbound") {
 			current = undefined;
 			assert.throws(() => router.guardWork(), /restricted/);

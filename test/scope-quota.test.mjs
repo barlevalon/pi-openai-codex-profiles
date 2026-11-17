@@ -5,7 +5,8 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, sy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { repoScope } from "../scope.ts";
+import { repoScope as resolveScope } from "../scope.ts";
+const repoScope = (cwd, root) => resolveScope(cwd, { githubOwners: ["example-org"], roots: [root] });
 import { quotaResponse, quotaStore, quotaUntil, RETRY_COOLDOWN_MS } from "../quota.ts";
 
 function git(path, ...args) {
@@ -21,7 +22,7 @@ function repo(path, origin) {
 
 test("scope uses actual nearest Git checkout, exact local origin, canonical root and primary worktree", () => {
   const dir = mkdtempSync(join(tmpdir(), "routing-scope-"));
-  const root = join(dir, "repos", "sibp");
+  const root = join(dir, "repos", "example-org");
   mkdirSync(root, { recursive: true });
   try {
     assert.equal(repoScope(undefined, root), "unknown");
@@ -29,18 +30,18 @@ test("scope uses actual nearest Git checkout, exact local origin, canonical root
     const inside = repo(join(root, "project"));
     const subdir = join(inside, "src");
     mkdirSync(subdir);
-    assert.equal(repoScope(subdir, root), "sibp");
-    assert.equal(repoScope(repo(join(dir, "sibp-evil")), root), "other");
+    assert.equal(repoScope(subdir, root), "eligible");
+    assert.equal(repoScope(repo(join(dir, "example-org-evil")), root), "other");
     const outside = repo(join(dir, "outside"));
-    for (const origin of ["https://github.com/sibp/project.git", "git@github.com:sibp/project.git", "ssh://git@github.com/sibp/project"]) {
+    for (const origin of ["https://github.com/example-org/project.git", "git@github.com:example-org/project.git", "ssh://git@github.com/example-org/project"]) {
       git(outside, "config", "--replace-all", "remote.origin.url", origin);
-      assert.equal(repoScope(outside, root), "sibp", origin);
+      assert.equal(repoScope(outside, root), "eligible", origin);
     }
-    for (const origin of ["https://github.com/sibp-evil/project", "https://github.com.evil/sibp/project", "https://evil@github.com/sibp/project", "https://github.com/sibp/project/more", "https://github.com/sibp/project?x", "https://github.com/sibp/..", "https://github.com/sibp/.git", "https://github.com/other/project"]) {
+    for (const origin of ["https://github.com/example-org-evil/project", "https://github.com.evil/example-org/project", "https://evil@github.com/example-org/project", "https://github.com/example-org/project/more", "https://github.com/example-org/project?x", "https://github.com/example-org/..", "https://github.com/example-org/.git", "https://github.com/other/project"]) {
       git(outside, "config", "--replace-all", "remote.origin.url", origin);
       assert.equal(repoScope(outside, root), "other", origin);
     }
-    git(outside, "config", "--replace-all", "remote.origin.url", "https://github.com/sibp/project");
+    git(outside, "config", "--replace-all", "remote.origin.url", "https://github.com/example-org/project");
     git(outside, "config", "--add", "remote.origin.url", "https://github.com/other/project");
     assert.equal(repoScope(outside, root), "other", "ambiguous local origin does not qualify");
     const nested = repo(join(outside, "nested"));
@@ -49,7 +50,7 @@ test("scope uses actual nearest Git checkout, exact local origin, canonical root
     assert.equal(repoScope(join(root, "alias"), root), "other");
     const linked = join(dir, "linked");
     git(inside, "worktree", "add", "-qb", "linked", linked);
-    assert.equal(repoScope(linked, root), "sibp");
+    assert.equal(repoScope(linked, root), "eligible");
     const separate = join(root, "separate");
     mkdirSync(separate);
     git(separate, "init", "-q", "--separate-git-dir", join(dir, "git-data"));
@@ -57,7 +58,7 @@ test("scope uses actual nearest Git checkout, exact local origin, canonical root
     git(separate, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture", "--allow-empty");
     const separateLinked = join(dir, "separate-linked");
     git(separate, "worktree", "add", "-qb", "separate", separateLinked);
-    assert.equal(repoScope(separateLinked, root), "sibp", "primary checkout supports a configured separate Git directory");
+    assert.equal(repoScope(separateLinked, root), "eligible", "primary checkout supports a configured separate Git directory");
     const otherLinked = join(dir, "other-linked");
     git(outside, "worktree", "add", "-qb", "other", otherLinked);
     assert.equal(repoScope(otherLinked, root), "other");
@@ -71,7 +72,7 @@ test("scope uses actual nearest Git checkout, exact local origin, canonical root
 test("the container itself is not an eligible checkout", () => {
   const dir = mkdtempSync(join(tmpdir(), "routing-container-"));
   try {
-    const root = repo(join(dir, "sibp"));
+    const root = repo(join(dir, "example-org"));
     const child = join(root, "not-a-checkout");
     mkdirSync(child);
     assert.equal(repoScope(root, root), "other");

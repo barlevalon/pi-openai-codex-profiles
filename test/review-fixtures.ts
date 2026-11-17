@@ -1,0 +1,73 @@
+import assert from "node:assert/strict";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import { reviewModel } from "../review.ts";
+import { parsePolicy } from "../policy.ts";
+import { quotaStore } from "../quota.ts";
+import { routing } from "../routing.ts";
+
+export async function reviewFixtures(ctx) {
+	const providers = builtinProviders();
+	const codex = providers.find(provider => provider.id === "openai-codex")!;
+	const copilot = providers.find(provider => provider.id === "github-copilot")!;
+	const config = { copilotModel: "claude-sonnet-5.5", codexFallbackModel: "gpt-5.6-luna" };
+	const primary = copilot.getModels().find(model => model.id === config.copilotModel)!;
+	const fallback = codex.getModels().find(model => model.id === config.codexFallbackModel)!;
+	assert.doesNotThrow(() => reviewModel(config, { ...primary, inputLimits: undefined }, fallback));
+	assert.doesNotThrow(() => reviewModel(config, { ...primary, inputLimits: { images: { resize: { maxWidth: 2000 } } } }, fallback));
+	assert.doesNotThrow(() => reviewModel(config, primary, { ...fallback, inputLimits: undefined }, reviewModel(config, primary, fallback)));
+	for (const inputLimits of [{ maxRequestBytes: 1024 }, { images: { maxPerMessage: 2 } }, { images: { resize: { maxWidth: 1234 } } }]) {
+		assert.throws(() => reviewModel(config, { ...primary, inputLimits }, fallback), /incompatible/);
+	}
+	assert.throws(() => reviewModel(config, { ...primary, input: ["image"] }, fallback), /incompatible/);
+	assert.throws(() => reviewModel(config, { ...primary, type: "image" }, fallback), /unavailable/);
+	assert.throws(() => reviewModel(config, undefined, fallback), /unavailable/);
+	assert.throws(() => reviewModel(config, primary, { ...fallback, id: "neighbor-model" }), /unavailable/);
+	let authCalls = 0;
+	const current = { ...ctx, modelRegistry: { find: (...args) => ctx.modelRegistry.find(...args), getApiKeyAndHeaders() { authCalls++; assert.fail("invalid review resolved physical auth"); } } };
+	for (const mode of ["disabled", "missing-native", "work-mismatch"]) {
+		const policy = parsePolicy({ version: 1, accountOrder: ["work", "personal"], work: { githubOwners: ["example-org"] }, ...(mode === "disabled" ? {} : { review: config }) });
+		const registry = mode === "work-mismatch" ? { ...current.modelRegistry, find(provider, id) {
+			const model = ctx.modelRegistry.find(provider, id);
+			return provider === "openai-codex:work" ? { ...model, inputLimits: { maxRequestBytes: 1234 } } : model;
+		} } : current.modelRegistry;
+		const router = routing(mode === "missing-native" ? { ...codex, getModels: () => [] } : codex, copilot, () => ({ ...current, modelRegistry: registry }), quotaStore(join(getAgentDir(), `review-${mode}`), assert.fail), assert.fail, policy);
+		const stream = router.stream({ ...primary, provider: "profile-review" }, { messages: [] }, { apiKey: "fake", fetch: () => assert.fail("invalid review sent a request") }, true, true);
+		const events = [];
+		for await (const event of stream) events.push(event);
+		const result = await stream.result();
+		assert.equal(result.stopReason, "error", mode);
+		assert.match(result.errorMessage, /not configured|unavailable|incompatible/, mode);
+		assert.equal(events.length, 1, mode);
+	}
+	assert.equal(authCalls, 0);
+
+	const otherCodex = codex.getModels().find(model => model.id !== fallback.id && JSON.stringify(model.inputLimits) === JSON.stringify(fallback.inputLimits));
+	assert.ok(otherCodex, "the native catalog supplies a second representative Codex model");
+	const alternate = { ...config, codexFallbackModel: otherCodex.id };
+	const advertised = reviewModel(alternate, primary, otherCodex);
+	const quota = quotaStore(join(getAgentDir(), "review-alternate"), assert.fail);
+	const raw = { ...codex, streamSimple(model) {
+		return (async function* () {
+			yield { type: "done", reason: "stop", message: {
+				role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), content: [], stopReason: "stop",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			} };
+		})();
+	} };
+	const registry = {
+		find: (provider, id) => provider === "profile-review" && id === primary.id ? advertised : ctx.modelRegistry.find(provider, id),
+		async getApiKeyAndHeaders() { return { ok: true, apiKey: "fake" }; },
+	};
+	const router = routing(raw, copilot, () => ({ ...ctx, modelRegistry: registry }), quota, () => {}, parsePolicy({ version: 1, accountOrder: ["personal"], review: alternate }));
+	const normalResult = await router.stream(registry.find("openai-codex:personal", otherCodex.id), { messages: [] }).result();
+	assert.equal(normalResult.stopReason, "stop", normalResult.errorMessage);
+	assert.equal(normalResult.provider, "openai-codex:personal");
+	assert.equal(normalResult.model, otherCodex.id, "normal account routing preserves the selected native model ID");
+	quota.observe("copilot-review", Date.now() + 60000);
+	const fallbackResult = await router.stream(advertised, { messages: [] }, {}, true, true).result();
+	assert.equal(fallbackResult.stopReason, "stop", fallbackResult.errorMessage);
+	assert.equal(fallbackResult.provider, "openai-codex:personal");
+	assert.equal(fallbackResult.model, otherCodex.id, "review uses the exact configured fallback instead of a default");
+}

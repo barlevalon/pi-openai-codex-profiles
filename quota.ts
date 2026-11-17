@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export type QuotaKey = "work-codex" | "copilot-review";
+export type QuotaKey = "work-codex" | "personal-codex" | "copilot-review";
 export const RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 const MAX_BODY = 16 * 1024;
 
@@ -11,12 +11,12 @@ export function quotaUntil(key: QuotaKey, payload: unknown, status?: number, ret
 	const data = payload as { type?: string; code?: string; error?: { code?: string; type?: string; resets_at?: number }; response?: { error?: { code?: string; type?: string; resets_at?: number } } };
 	const error = data.error ?? data.response?.error ?? (data.type === "error" ? data : undefined);
 	if (!error) return;
-	const known = key === "work-codex"
+	const known = key !== "copilot-review"
 		? error.code === "usage_limit_reached" || error.type === "usage_limit_reached"
 		: status === 402 && error.code === "quota_exceeded";
 	if (!known) return;
 	const reset = "resets_at" in error ? error.resets_at : undefined;
-	if (key === "work-codex" && typeof reset === "number" && Number.isFinite(reset) && reset * 1000 > now && reset * 1000 < 8.64e15) return reset * 1000;
+	if (key !== "copilot-review" && typeof reset === "number" && Number.isFinite(reset) && reset * 1000 > now && reset * 1000 < 8.64e15) return reset * 1000;
 	if (retryAfter) {
 		const until = /^\d+(?:\.\d+)?$/.test(retryAfter) ? now + Number(retryAfter) * 1000 : Date.parse(retryAfter);
 		if (Number.isFinite(until) && until > now && until < 8.64e15) return until;
@@ -58,7 +58,8 @@ export async function quotaResponse(key: QuotaKey, response: Response, signal?: 
 }
 
 export function quotaStore(directory: string, warn: (message: string) => void) {
-	const memory: Record<QuotaKey, number> = { "work-codex": 0, "copilot-review": 0 };
+	const memory: Record<QuotaKey, number> = { "work-codex": 0, "personal-codex": 0, "copilot-review": 0 };
+	let localCopilotUntil = 0;
 	return {
 		until(key: QuotaKey): number {
 			try {
@@ -84,12 +85,13 @@ export function quotaStore(directory: string, warn: (message: string) => void) {
 				return memory[key];
 			} catch {
 				if (key === "work-codex") return Infinity;
-				if (memory[key] > Date.now()) return memory[key];
-				throw new Error("Cannot read Copilot quota state");
+				if (key === "copilot-review" && localCopilotUntil > Date.now()) return localCopilotUntil;
+				throw new Error(key === "copilot-review" ? "Cannot read Copilot quota state" : "Cannot read personal Codex quota state");
 			}
 		},
 		observe(key: QuotaKey, until: number) {
 			memory[key] = Math.max(memory[key], until);
+			if (key === "copilot-review") localCopilotUntil = Math.max(localCopilotUntil, until);
 			try {
 				mkdirSync(directory, { recursive: true, mode: 0o700 });
 				const file = join(directory, `${key}.${randomUUID()}`);

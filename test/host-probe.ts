@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { streamFixtures } from "./stream-fixtures.ts";
+import { reviewFixtures } from "./review-fixtures.ts";
 
 export default function (pi) {
 	const scenario = JSON.parse(process.env.ROUTING_SCENARIO!);
@@ -20,18 +22,37 @@ export default function (pi) {
 	pi.on("session_start", async (_event, ctx) => {
 		try {
 			assert.equal(ctx.model.provider, scenario.review ? "profile-review" : "codex-policy");
-			assert.equal(ctx.model.id, scenario.review ? "claude-opus-5.5" : "gpt-6.1-sol");
+			assert.equal(ctx.model.id, scenario.review ? scenario.reviewId ?? "claude-sonnet-5.5" : "gpt-5.6-luna");
 			assert.equal(pi.getThinkingLevel(), scenario.thinking ?? "high");
+			if (scenario.policy === "missing" || scenario.policy === "malformed" || (scenario.policy && typeof scenario.policy === "object" && !scenario.policy.review)) assert.equal(ctx.modelRegistry.getAll().some(model => model.provider === "profile-review"), false, "no policy means no implicit review ID");
 			const before = readFileSync(join(getAgentDir(), "auth.json"), "utf8");
+			if (scenario.snapshot) writeFileSync(join(getAgentDir(), "codex-routing-policy.json"), JSON.stringify({ version: 1, accountOrder: ["personal"] }));
+			if (scenario.catalogOnly) {
+				const primary = ctx.modelRegistry.find("github-copilot", scenario.reviewId ?? "claude-sonnet-5.5");
+				const fallback = ctx.modelRegistry.find("openai-codex:personal", "gpt-5.6-luna");
+				assert.equal(ctx.model.contextWindow, Math.min(primary.contextWindow, fallback.contextWindow));
+				assert.equal(ctx.model.maxTokens, Math.min(primary.maxTokens, fallback.maxTokens));
+				assert.deepEqual(ctx.model.input, primary.input.filter(kind => fallback.input.includes(kind)));
+				assert.deepEqual(getSupportedThinkingLevels(ctx.model), getSupportedThinkingLevels(primary).filter(level => getSupportedThinkingLevels(fallback).includes(level)));
+				assert.deepEqual(ctx.model.inputLimits, primary.inputLimits);
+				pi.appendEntry("routing-probe-ready", { model: ctx.model.provider, external });
+				return;
+			}
+			if (scenario.staleReview) {
+				const stream = ctx.modelRegistry.getProvider("profile-review").streamSimple({ ...ctx.model, id: "stale-review-id" }, { messages: [] }, { apiKey: "fake", fetch: () => assert.fail("stale review reached physical transport") });
+				const result = await stream.result();
+				assert.equal(result.stopReason, "error");
+				assert.match(result.errorMessage, /not configured/);
+			}
 			if (scenario.select) {
-				await pi.setModel(ctx.modelRegistry.find(scenario.select, "gpt-6.1-sol"));
+				await pi.setModel(ctx.modelRegistry.find(scenario.select, "gpt-5.6-luna"));
 				assert.equal(ctx.model.provider, "codex-policy");
 			}
 			if (scenario.guard) {
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.modelRegistry.find("openai-codex:work", "gpt-6.1-sol"));
+				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.modelRegistry.find("openai-codex:work", "gpt-5.6-luna"));
 				assert.equal(auth.ok, false);
 				assert.match(auth.error, /restricted/);
-				const model = ctx.modelRegistry.find("openai-codex:work", "gpt-6.1-sol");
+				const model = ctx.modelRegistry.find("openai-codex:work", "gpt-5.6-luna");
 				const stream = ctx.modelRegistry.streamSimple(model, { messages: [] }, { apiKey: scenario.workToken, headers: { Authorization: "explicit" }, transport: "sse", fetch: () => { throw new Error("Work transport reached"); } });
 				const result = await stream.result();
 				assert.equal(result.stopReason, "error");
@@ -44,10 +65,26 @@ export default function (pi) {
 			}
 			if (scenario.synthetic) {
 				await streamFixtures(ctx);
+				await reviewFixtures(ctx);
 				pi.appendEntry("routing-probe-ready", { model: ctx.model.provider, external });
 				return;
 			}
-			if (!scenario.agent) {
+			if (scenario.capabilityCheck) {
+				const registry = ctx.modelRegistry;
+				const resolve = registry.getApiKeyAndHeaders;
+				let authCalls = 0;
+				registry.getApiKeyAndHeaders = () => { authCalls++; assert.fail("invalid review resolved physical auth"); };
+				try {
+					const stream = registry.getProvider("profile-review").streamSimple(ctx.model, { messages: [] }, { apiKey: "fake", fetch: () => assert.fail("invalid review sent a request") });
+					const events = [];
+					for await (const event of stream) events.push(event);
+					const result = await stream.result();
+					assert.equal(authCalls, 0);
+					assert.equal(result.stopReason, "error");
+					assert.match(result.errorMessage, /incompatible capabilities/);
+					assert.equal(events.length, 1);
+				} finally { registry.getApiKeyAndHeaders = resolve; }
+			} else if (!scenario.agent) {
 				const controller = new AbortController();
 				const rawEvents = [];
 				const responses = [];
@@ -72,12 +109,14 @@ export default function (pi) {
 						const headers = Object.fromEntries(new Headers(init.headers));
 						requests.push({ url: String(input), headers });
 						const work = headers["chatgpt-account-id"] === "work";
+						if (scenario.personalQuota && headers["chatgpt-account-id"] === "personal") return sse([quota]);
 						if (scenario.reviewError && headers["chatgpt-account-id"] === "personal") return new Response("fixture failure", { status: 500 });
 						const copilot = String(input).includes("/copilot/");
 						if (copilot) {
 							if (scenario.mode === "copilot-rate") return new Response(JSON.stringify({ error: { code: "quota_exceeded" } }), { status: 429 });
+							if (scenario.mode === "copilot-ok" && scenario.reviewId === "gpt-5.6-luna") return sse([complete]);
 							if (scenario.mode === "copilot-ok") return new Response([
-								'event: message_start\ndata: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"claude-opus-5.5","content":[],"usage":{"input_tokens":2,"output_tokens":0}}}\n\n',
+								'event: message_start\ndata: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"claude-sonnet-5.5","content":[],"usage":{"input_tokens":2,"output_tokens":0}}}\n\n',
 								'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}\n\n',
 								'event: message_stop\ndata: {"type":"message_stop"}\n\n',
 							].join(""), { headers: { "content-type": "text/event-stream" } });
@@ -108,7 +147,7 @@ export default function (pi) {
 						return sse([scenario.mode === "empty" ? { ...complete, response: { ...complete.response, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } } : complete]);
 					},
 				};
-				const model = scenario.direct ? ctx.modelRegistry.find(scenario.direct, scenario.direct === "github-copilot" ? "claude-opus-5.5" : "gpt-6.1-sol") : ctx.model;
+				const model = scenario.direct ? ctx.modelRegistry.find(scenario.direct, scenario.direct === "github-copilot" ? "claude-sonnet-5.5" : "gpt-5.6-luna") : ctx.model;
 				if (scenario.lowLevelReview) {
 					const result = await ctx.modelRegistry.stream(ctx.model, { messages: [] }, {}).result();
 					assert.equal(result.stopReason, "error");
