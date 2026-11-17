@@ -75,11 +75,14 @@ export default function (pi: ExtensionAPI) {
 	pi.on("model_select", (_event, ctx) => normalize(ctx));
 	pi.on("session_tree", (_event, ctx) => normalize(ctx));
 	pi.on("session_shutdown", () => { current = undefined; });
+	let reviewUsedCodex = false;
+	pi.on("before_agent_start", () => { reviewUsedCodex = false; });
 	pi.on("message_end", (event, ctx) => {
 		const message = event.message;
+		if (ctx.model?.provider !== REVIEW || message.role !== "assistant") return;
+		if ((message.provider === PERSONAL || message.provider === WORK) && message.stopReason !== "error" && message.stopReason !== "aborted") reviewUsedCodex = true;
 		if (ctx.mode !== "json" && ctx.mode !== "print") return;
-		if (ctx.model?.provider !== REVIEW || message.role !== "assistant" || message.stopReason !== "stop") return;
-		if (message.provider !== PERSONAL && message.provider !== WORK) return;
+		if (!reviewUsedCodex || (message.stopReason !== "stop" && message.stopReason !== "length")) return;
 		return {
 			message: {
 				...message,

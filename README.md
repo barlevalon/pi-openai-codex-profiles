@@ -59,9 +59,9 @@ Qualifying repositories use work, then personal after confirmed work quota exhau
 /model profile-review/claude-opus-5.5
 ```
 
-This dedicated selection tries exactly `github-copilot/claude-opus-5.5`. Confirmed Copilot quota exhaustion falls back to exactly `gpt-6.1-sol` under the repository account policy. It advertises the intersection of the models' thinking and input capabilities and their smaller limits. A notice reports reduced review diversity when Codex answers. JSON and print-mode final answers also carry the notice, so Poteto receives it in the review result.
+This dedicated selection tries exactly `github-copilot/claude-opus-5.5`. Confirmed Copilot quota exhaustion falls back to exactly `gpt-6.1-sol` under the repository account policy. It advertises the intersection of the models' thinking and input capabilities and their smaller limits. A notice reports reduced review diversity when Codex answers. JSON and print-mode final answers also carry the notice, including truncated answers and reviews that later return to Copilot, so Poteto receives it in the review result.
 
-Ordinary `github-copilot` selections do not change. The review provider accepts provider-neutral `streamSimple` calls and rejects API-specific `stream` calls. This package does not change Poteto's configured review models or substitute other model families.
+Missing or broken Copilot authentication fails the review without switching families. Ordinary `github-copilot` selections do not change. The review provider accepts provider-neutral `streamSimple` calls and rejects API-specific `stream` calls. This package does not change Poteto's configured review models or substitute other model families.
 
 ### Quota and stream rules
 

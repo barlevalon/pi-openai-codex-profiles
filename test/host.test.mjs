@@ -110,6 +110,8 @@ const cases = [
   { name: "authentication failure never falls back", sibp: true, mode: "unauthorized", expected: ["work"], answer: "openai-codex:work", stop: "error" },
   { name: "generic 429 never falls back", sibp: true, mode: "rate", expected: ["work"], answer: "openai-codex:work", stop: "error" },
   { name: "partial output never replays", sibp: true, mode: "partial", expected: ["work"], answer: "openai-codex:work", stop: "error" },
+  { name: "quota after partial output stays an error with native retries", sibp: true, mode: "partial", retries: 3, expected: ["work"], answer: "openai-codex:work", stop: "error" },
+  { name: "quota after thinking stays an error with native retries", sibp: true, mode: "thinking", retries: 3, expected: ["work"], answer: "openai-codex:work", stop: "error" },
   { name: "caller abort wins over quota", sibp: true, mode: "abort", expected: ["work"], answer: "openai-codex:work", stop: "aborted" },
   { name: "HTTP hook failure never falls back", sibp: true, mode: "hook", expected: ["work"], answer: "openai-codex:work", stop: "error" },
   { name: "stream hook failure never falls back", sibp: true, mode: "event-hook", expected: ["work"], answer: "openai-codex:work", stop: "error" },

@@ -142,9 +142,9 @@ export function routing(codex: Provider, copilot: Provider, current: () => Exten
 					const mayRetry = !hookFailed && !options.signal?.aborted && (terminal.reason !== "aborted" || local.signal.aborted);
 					if (emptyQuotaFailure && mayRetry && index + 1 < providers.length) continue;
 				}
-				if (options.signal?.aborted && terminal.type === "error") {
-					terminal.reason = "aborted";
-					terminal.error.stopReason = "aborted";
+				if (terminal.type === "error" && (options.signal?.aborted || local.signal.aborted)) {
+					terminal.reason = options.signal?.aborted ? "aborted" : "error";
+					terminal.error.stopReason = terminal.reason;
 				}
 				state = "terminal";
 				if (start) output.push(start);
