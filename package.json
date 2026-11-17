@@ -7,7 +7,7 @@
     "extensions": ["./index.ts"]
   },
   "scripts": {
-    "test": "node --test test/package.test.mjs"
+    "test": "node --test test/*.test.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

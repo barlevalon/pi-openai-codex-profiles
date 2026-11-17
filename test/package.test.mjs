@@ -27,12 +27,19 @@ test("Pi package uses host dependencies and registers both Codex profiles", { ti
     });
     assert.equal(install.status, 0, install.error?.message || install.stderr || install.stdout);
     const probe = join(directory, "probe.ts");
-    writeFileSync(probe, `export default function (pi) {
+    writeFileSync(probe, `import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+    export default function (pi) {
       pi.on("session_start", (_event, ctx) => {
         pi.appendEntry("profiles-package-test", ["openai-codex", "openai-codex:personal", "openai-codex:work"].map(id => {
           const provider = ctx.modelRegistry.getProvider(id);
-          return { id, models: provider?.getModels().map(model => ({ id: model.id, provider: model.provider })) };
+          return { id, models: provider?.getModels().map(model => ({ id: model.id, provider: model.provider })), all: provider?.getAllModels?.().map(model => ({ id: model.id, provider: model.provider })) };
         }));
+        const codex = ctx.modelRegistry.getProvider("openai-codex").getModels();
+        const opus = ctx.modelRegistry.find("github-copilot", "claude-opus-5.5");
+        const fallback = ctx.modelRegistry.find("openai-codex:personal", "gpt-6.1-sol");
+        const review = ctx.modelRegistry.find("profile-review", "claude-opus-5.5");
+        const shape = model => ({ id: model.id, input: model.input, levels: getSupportedThinkingLevels(model), contextWindow: model.contextWindow, maxTokens: model.maxTokens, inputLimits: model.inputLimits });
+        pi.appendEntry("routing-catalog-test", { native: codex.map(shape), policy: codex.map(model => shape(ctx.modelRegistry.find("codex-policy", model.id))), opus: shape(opus), fallback: shape(fallback), review: shape(review) });
       });
     }`);
     child = spawn("pi", ["--offline", "--no-mcp", "--no-context-files", "--no-approve", "--mode", "rpc", "--no-session", "-e", probe], {
@@ -71,7 +78,21 @@ test("Pi package uses host dependencies and registers both Codex profiles", { ti
     for (const profile of [personal, work]) {
       assert.deepEqual(profile.models.map(model => model.id), base.models.map(model => model.id));
       assert.ok(profile.models.every(model => model.provider === profile.id));
+      assert.deepEqual(profile.all.map(model => model.id), base.all.map(model => model.id));
+      assert.ok(profile.all.every(model => model.provider === profile.id));
     }
+    const catalog = response.data.entries.find(entry => entry.customType === "routing-catalog-test").data;
+    for (let index = 0; index < catalog.native.length; index++) {
+      const { inputLimits: _nativeLimits, ...native } = catalog.native[index];
+      const { inputLimits: _virtualLimits, ...policy } = catalog.policy[index];
+      assert.deepEqual(policy, native);
+    }
+    assert.equal(catalog.review.contextWindow, Math.min(catalog.opus.contextWindow, catalog.fallback.contextWindow));
+    assert.equal(catalog.review.maxTokens, Math.min(catalog.opus.maxTokens, catalog.fallback.maxTokens));
+    assert.deepEqual(catalog.review.levels, catalog.opus.levels.filter(level => catalog.fallback.levels.includes(level)));
+    assert.deepEqual(catalog.review.input, catalog.opus.input.filter(input => catalog.fallback.input.includes(input)));
+    assert.deepEqual(catalog.opus.inputLimits, catalog.fallback.inputLimits, "host review targets share image limits");
+    assert.deepEqual(catalog.review.inputLimits, catalog.opus.inputLimits);
     child.stdin.end();
     assert.deepEqual(await exited, [0, null]);
     assert.equal(diagnostics.trim(), "", diagnostics);
