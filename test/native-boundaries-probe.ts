@@ -35,6 +35,7 @@ function fixture(ctx: ExtensionContext, mismatch = false) {
 	const policy = parsePolicy({ version: 1, accountOrder: ["personal"], copilotProfile: "work", work: { roots: [root] }, review: { copilotModel: primary.id, codexFallbackModel: fallback.id } });
 	assert.ok(policy.review);
 	const advertised = reviewModel(policy.review, primary, fallback);
+	assert.ok(advertised);
 	let authCalls = 0;
 	let snapshots = 0;
 	const observations: DirectObservation[] = [];
@@ -107,9 +108,10 @@ async function directCopilot(ctx: ExtensionContext) {
 		stream(model, _transcript, options) { inspect(model, options); assert.equal(options && "thinkingEnabled" in options && options.thinkingEnabled, true); return sentinel; },
 		streamSimple(model, _transcript, options) { inspect(model, options); assert.equal(options?.reasoning, "high"); return sentinel; },
 	};
-	const policy = parsePolicy({ version: 1, accountOrder: ["personal"], copilotProfile: "personal" });
+	const data = fixture(ctx);
+	const policy = data.policy;
 	const quota: QuotaLedger = { snapshot() { assert.fail("ordinary Copilot read routed quota"); }, observeDirect() { assert.fail("ordinary Copilot wrote routed quota"); } };
-	const routing = routingFixture(codex, native, () => ctx, quota, assert.fail, policy);
+	const routing = routingFixture(codex, native, () => data.ctx, quota, assert.fail, policy);
 	const options = { signal: controller.signal, headers, env, apiKey: "fixture-source" };
 	assert.equal(routing.copilot.streamSimple(source, transcript, { ...options, reasoning: "high" }), sentinel);
 	assert.equal(routing.copilot.stream(source, transcript, { ...options, thinkingEnabled: true }), sentinel);
@@ -122,7 +124,7 @@ async function directCopilot(ctx: ExtensionContext) {
 		assert.equal(Object.hasOwn(received!, "maxRetries"), false);
 		return result;
 	} };
-	const guarded = routingFixture(codex, classifierNative, () => ctx, quota, assert.fail, policy);
+	const guarded = routingFixture(codex, classifierNative, () => data.ctx, quota, assert.fail, policy);
 	assert.equal(await guarded.copilot.classify!(classifier, { state: { fixture: true }, questions: {} }, options), result);
 }
 

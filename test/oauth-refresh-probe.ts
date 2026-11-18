@@ -65,7 +65,7 @@ export default function (pi: ExtensionAPI) {
 				stream() { requests++; assert.fail("Denied work request reached the native provider"); },
 				streamSimple() { requests++; assert.fail("Denied work request reached the native provider"); },
 			};
-			const policy = parsePolicy({ version: 1, copilotProfile: "personal", accountOrder: ["work", "personal"], work: { roots: [root] } });
+			const policy = parsePolicy({ version: 1, copilotProfile: "work", accountOrder: ["work", "personal"], work: { roots: [root] } });
 			const routing = routingFixture(native, copilot, () => current, createQuotaLedger(join(directory, "quota"), assert.fail), assert.fail, policy);
 			const work = routing.work;
 			const personal = routing.personal;
@@ -100,7 +100,7 @@ export default function (pi: ExtensionAPI) {
 					release.resolve();
 					const denied = await pending;
 					assert.equal(denied.stopReason, "error");
-					assert.match(denied.errorMessage!, /restricted/);
+					assert.match(denied.errorMessage!, /restricted|repository changed/i);
 				}
 				const persistedAfterDenial = stored();
 				assert.equal(conversions, 0, "Scope loss denies work auth conversion after refresh");

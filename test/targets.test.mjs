@@ -24,10 +24,10 @@ test("model namespaces reject malformed native IDs without requiring catalog mem
 });
 
 test("profile membership governs Copilot independently of Codex order", () => {
-  for (const copilotProfile of [undefined, "personal", "work"]) {
+  for (const copilotProfile of [undefined, "work"]) {
     const policy = parsePolicy({ version: 1, accountOrder: ["personal"], copilotProfile, work: { roots: ["/example/work"] } });
     for (const scope of ["eligible", "other", "unknown"]) {
-      assert.equal(accountEligible(policy, COPILOT_ACCOUNT, scope), copilotProfile === "personal" || copilotProfile === "work" && scope === "eligible");
+      assert.equal(accountEligible(policy, COPILOT_ACCOUNT, scope), copilotProfile === "work" && scope === "eligible");
       assert.equal(accountEligible(policy, { ...COPILOT_ACCOUNT }, scope), accountEligible(policy, COPILOT_ACCOUNT, scope));
       assert.equal(accountEligible(policy, WORK_ACCOUNT, scope), false);
     }
@@ -62,5 +62,5 @@ test("candidate selection preserves order, skips cooling and unreadable work, an
 
 test("work Copilot requires selectors even with personal-only Codex priority", () => {
   for (const work of [undefined, {}, { githubOwners: [] }, { roots: [] }]) assert.throws(() => parsePolicy({ version: 1, accountOrder: ["personal"], copilotProfile: "work", work }), /work requires/);
-  for (const copilotProfile of [null, "other", {}, 1]) assert.throws(() => parsePolicy({ version: 1, accountOrder: ["personal"], copilotProfile }), /copilotProfile/);
+  for (const copilotProfile of [null, "personal", "other", {}, 1]) assert.throws(() => parsePolicy({ version: 1, accountOrder: ["personal"], copilotProfile }), /Invalid routing policy structure/);
 });

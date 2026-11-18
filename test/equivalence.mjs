@@ -43,17 +43,18 @@ const scenarios = [
   { name: "response hook failure prevents replay", eligible: true, mode: "response-hook", accounts: ["work"], stop: "error" },
   { name: "event hook failure prevents replay", eligible: true, mode: "event-hook", accounts: ["work"], stop: "error" },
   { name: "payload hook failure never sends", eligible: true, mode: "payload-hook", accounts: [], stop: "error" },
-  { name: "review exact primary success", review: true, mode: "copilot-success", accounts: ["copilot"] },
-  { name: "review exact fallback with factual notice", review: true, accounts: ["copilot", "personal"], notice: true },
-  { name: "review failed fallback makes no contribution claim", review: true, reviewError: true, accounts: ["copilot", "personal"], stop: "error" },
+  { name: "review exact primary success", review: true, eligible: true, mode: "copilot-success", accounts: ["copilot"] },
+  { name: "review exact fallback with factual notice", review: true, order: ["personal"], eligible: true, accounts: ["copilot", "personal"], notice: true },
+  { name: "review failed fallback makes no contribution claim", review: true, order: ["personal"], eligible: true, reviewError: true, accounts: ["copilot", "personal"], stop: "error" },
   { name: "review scope ordered fallback", review: true, eligible: true, mode: "quota", accounts: ["copilot", "work", "personal"], notice: true },
-  { name: "review native same-family primary", review: true, reviewId: codexId, mode: "copilot-success", accounts: ["copilot"] },
-  { name: "review runtime capability mismatch", review: true, mismatch: true, accounts: [], stop: "error" },
-  { name: "cooling review target still validates capabilities", review: true, mismatch: true, cool: ["copilot-review"], accounts: [], stop: "error" },
-  { name: "review rejects stale exact selection", review: true, stale: true, accounts: [], stop: "error" },
-  { name: "review raw stream rejected", review: true, raw: true, accounts: [], thrown: "streamSimple" },
-  { name: "review registry raw stream rejected", review: true, raw: true, registryRaw: true, accounts: [], stop: "error" },
-  { name: "ordinary Copilot remains native", direct: "github-copilot", accounts: ["copilot"], stop: "error" },
+  { name: "review outside scope refuses before transport without fallback", review: true, accounts: [], stop: "error" },
+  { name: "review native same-family primary", review: true, eligible: true, reviewId: codexId, mode: "copilot-success", accounts: ["copilot"] },
+  { name: "review runtime capability mismatch", review: true, eligible: true, mismatch: true, accounts: [], stop: "error" },
+  { name: "cooling review target still validates capabilities", review: true, eligible: true, mismatch: true, cool: ["copilot-review"], accounts: [], stop: "error" },
+  { name: "review rejects stale exact selection", review: true, eligible: true, stale: true, accounts: [], stop: "error" },
+  { name: "review raw stream rejected", review: true, eligible: true, raw: true, accounts: [], thrown: "streamSimple" },
+  { name: "review registry raw stream rejected", review: true, eligible: true, raw: true, registryRaw: true, accounts: [], stop: "error" },
+  { name: "ordinary Copilot remains native", direct: "github-copilot", eligible: true, accounts: ["copilot"], stop: "error" },
   { name: "original builtin Codex remains native", direct: "openai-codex", accounts: ["builtin"] },
   { name: "reused direct source preserves overrides", direct: personal, override: true, accounts: ["personal"] },
   { name: "switched source drops credentials and headers", direct: personal, override: true, eligible: true, accounts: ["work"] },
@@ -71,7 +72,7 @@ async function run(checkout, scenario) {
   git("remote", "add", "origin", `git@github.com:${scenario.eligible ? "example-org" : "personal"}/fixture.git`);
   const fixture = (name, value) => writeFileSync(join(dir, name), typeof value === "string" ? value : JSON.stringify(value));
   if (scenario.policy !== "missing") fixture("codex-routing-policy.json", scenario.policy === "malformed" ? "{" : {
-    version: 1, copilotProfile: "personal", accountOrder: scenario.order ?? ["work", "personal"], work: { githubOwners: ["example-org"] },
+    version: 1, copilotProfile: "work", accountOrder: scenario.order ?? ["work", "personal"], work: { githubOwners: ["example-org"] },
     review: { copilotModel: scenario.reviewId ?? reviewId, codexFallbackModel: codexId },
   });
   fixture("auth.json", Object.fromEntries([

@@ -179,7 +179,7 @@ async function authScope(ctx: ExtensionContext) {
 	release();
 	const result = await stream.result();
 	assert.equal(result.stopReason, "error");
-	assert.match(result.errorMessage!, /restricted/);
+	assert.match(result.errorMessage!, /Repository changed/);
 	assert.equal(calls, 0);
 	assert.equal(authCalls, 1);
 	const workProvider = routing.work;
@@ -212,11 +212,27 @@ async function authScope(ctx: ExtensionContext) {
 		return Reflect.get(target, key, receiver);
 	} });
 	current = { ...current, modelRegistry: changedRegistry };
-	const changed = routingFixture(native, copilot, () => current, createQuotaLedger(join(getAgentDir(), "auth-root"), assert.fail), assert.fail, aliasPolicy);
-	const denied = await changed.personal.streamSimple({ ...fallback, provider: "openai-codex:personal" }, normalizeContext({ messages: [] })).result();
+	const snapshotNative: typeof codex = { ...codex, streamSimple(model, _transcript, options = {}) {
+		calls++;
+		const output = createAssistantMessageEventStream();
+		(async () => {
+			for (const event of [{ type: "response.created" }, { type: "response.in_progress" }]) {
+				await options.onPayload?.({}, model);
+				await options.onProviderStreamEvent?.(event, model);
+			}
+			output.push({ type: "done", reason: "stop", message: { ...message(model), stopReason: "stop" } });
+			output.end();
+		})();
+		return output;
+	} };
+	const changed = routingFixture(snapshotNative, copilot, () => current, createQuotaLedger(join(getAgentDir(), "auth-root"), assert.fail), assert.fail, aliasPolicy);
+	const completed = await changed.personal.streamSimple({ ...fallback, provider: "openai-codex:personal" }, normalizeContext({ messages: [] })).result();
+	assert.equal(completed.stopReason, "stop", completed.errorMessage);
+	assert.equal(calls, 1, "the request keeps its initial repository membership through auth and stream callbacks");
+	const denied = await changed.work.streamSimple(fallback, normalizeContext({ messages: [] })).result();
 	assert.equal(denied.stopReason, "error");
 	assert.match(denied.errorMessage!, /restricted/);
-	assert.equal(calls, 0, "canonical roots are rechecked after auth awaits");
+	assert.equal(calls, 1, "the next request resolves repository membership again");
 }
 
 async function directSource(ctx: ExtensionContext) {

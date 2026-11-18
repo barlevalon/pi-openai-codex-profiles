@@ -3,12 +3,12 @@ import type { Api, ApiStreamOptions, AssistantMessage, AssistantMessageEvent, As
 import type { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-copilot";
 import type { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { repoScope } from "./scope.ts";
+import { repoScope, type RepoScope } from "./scope.ts";
 import type { Policy } from "./policy.ts";
 import { reviewModel } from "./review.ts";
 import type { QuotaLedger } from "./quota.ts";
 import { decodeQuotaPayload, decodeQuotaResponse, type DirectObservation } from "./quota-protocol.ts";
-import { guardedAuth, guardedAvailability, protectChat, protectClassifier } from "./native-guards.ts";
+import { guardedAuth, guardedAvailability, protectChat, protectRequest } from "./native-guards.ts";
 import { failure, hasOutput, rawHasOutput } from "./stream-evidence.ts";
 import { COPILOT_ACCOUNT, PERSONAL_ACCOUNT, WORK_ACCOUNT, accountEligible, accountOwner, codexModelId, eligibleCandidates, selectTargets } from "./targets.ts";
 import type { Candidates, CodexAccount, ModelTarget, ProviderAccount } from "./targets.ts";
@@ -55,22 +55,27 @@ export function createNativeRouting(
 	}
 	function scope() {
 		const work = policy.profiles.find(profile => profile.name === "work");
-		return repoScope(current()?.cwd, work?.criteria);
+		return work ? repoScope(current()?.cwd, work.criteria) : "unknown";
 	}
-	function allowed(account: ProviderAccount) {
-		const owner = accountOwner(policy, account);
-		return accountEligible(policy, account, owner?.name === "work" ? scope() : "unknown");
+	function allowed(account: ProviderAccount, repository = accountOwner(policy, account)?.name === "work" ? scope() : "unknown") {
+		return accountEligible(policy, account, repository);
 	}
-	function requireAccount(account: ProviderAccount) {
-		if (!allowed(account)) throw new Error(`${account.credential} is restricted to its configured eligible profile repositories`);
+	function requireAccount(account: ProviderAccount, repository?: RepoScope) {
+		if (!allowed(account, repository)) throw new Error(`${account.credential} is restricted to its configured eligible profile repositories`);
+	}
+	function requestGuard(account: ProviderAccount, repository = scope(), cwd = current()?.cwd) {
+		requireAccount(account, repository);
+		return () => {
+			if (current()?.cwd !== cwd) throw new Error("Repository changed during the request");
+		};
 	}
 	function physical(target: ModelTarget): Model<Api> {
 		const model = context().modelRegistry.find(target.account.credential, target.modelId);
 		if (!model) throw new Error("Configured routing target is not registered");
 		return target.account.credential === COPILOT_ACCOUNT.credential ? copilotSource(model) : codexSource(model);
 	}
-	function candidates(intent: Parameters<typeof eligibleCandidates>[2]): Candidates {
-		const eligibility = eligibleCandidates(policy, scope(), intent);
+	function candidates(intent: Parameters<typeof eligibleCandidates>[2], repository: RepoScope): Candidates {
+		const eligibility = eligibleCandidates(policy, repository, intent);
 		if (eligibility.kind === "unavailable") throw new Error(`Routing is unavailable for this profile: ${eligibility.reason}`);
 		return selectAvailable(eligibility.targets);
 	}
@@ -82,35 +87,41 @@ export function createNativeRouting(
 		}
 		return selection.targets;
 	}
-	function requireReview(selected?: Model<Api>): Candidates {
-		const binding = policy.review;
-		const id = selected?.id ?? binding?.primary;
-		if (!binding || id !== binding.primary) throw new Error("Review is not configured for this selection");
-		requireAccount(COPILOT_ACCOUNT);
-		reviewModel(binding, copilot.getModels().find(model => model.id === binding.primary), codex.getModels().find(model => model.id === binding.fallback));
-		const eligibility = eligibleCandidates(policy, scope(), { kind: "review" });
-		if (eligibility.kind !== "eligible") throw new Error("Configured review is unavailable for this profile");
-		const primary = physical(eligibility.targets[0]);
-		const advertised = selected ?? context().modelRegistry.find(REVIEW, binding.primary);
-		if (!advertised) throw new Error("Configured review target is not registered");
+	const derivedReview = reviewModel(policy.review,
+		copilot.getModels().find(model => model.id === policy.review?.primary),
+		codex.getModels().find(model => model.id === policy.review?.fallback));
+	const reviewModels = derivedReview ? [derivedReview] : [];
+	function reviewTargets(repository: RepoScope, selected?: Model<Api>): Candidates | undefined {
+		const registry = current()?.modelRegistry;
+		if (!derivedReview || !registry) return;
+		const advertised = selected ?? registry.find(REVIEW, derivedReview.id);
+		if (!advertised || advertised.id !== derivedReview.id) return;
+		const eligibility = eligibleCandidates(policy, repository, { kind: "review" });
+		if (eligibility.kind !== "eligible") return;
+		const primary = registry.find(COPILOT_ACCOUNT.credential, derivedReview.id);
 		for (const target of eligibility.targets) {
-			if (target.account.credential !== COPILOT_ACCOUNT.credential) reviewModel(binding, primary, physical(target), advertised);
+			if (target.account.credential !== COPILOT_ACCOUNT.credential
+				&& !reviewModel(policy.review, primary, registry.find(target.account.credential, target.modelId), advertised)) return;
 		}
 		return eligibility.targets;
 	}
-	function reviewAllowed() {
-		try { requireReview(); return true; } catch { return false; }
+	function requireReview(repository: RepoScope, selected?: Model<Api>): Candidates {
+		const targets = reviewTargets(repository, selected);
+		if (!targets) throw new Error("Configured review targets are unavailable or have incompatible capabilities for this profile");
+		return targets;
 	}
+	function reviewAllowed() { return reviewTargets(scope()) !== undefined; }
 
 	function openStream<A extends Api, O extends StreamOptions>(
 		source: Model<A>,
 		options: O,
-		prepare: () => Candidates,
+		prepare: (repository: RepoScope) => Candidates,
 		destination: (target: ModelTarget) => Model<A>,
 		native: (target: ModelTarget, model: Model<A>, hooks: O) => AssistantMessageEventStream,
-		ingress?: CodexAccount,
 	) {
 		const output = createAssistantMessageEventStream();
+		const cwd = current()?.cwd;
+		const repository = scope();
 		async function consume(target: ModelTarget, reuse: boolean): Promise<Outcome> {
 			const attempt: { progress: Progress } = { progress: { kind: "hidden" } };
 			const quotaAbort = new AbortController();
@@ -118,10 +129,8 @@ export function createNativeRouting(
 			let partial: AssistantMessage | undefined;
 			let start: Start | undefined;
 			let terminal: Terminal | undefined;
-			function block(cause: unknown) { attempt.progress = { kind: "blocked", cause }; }
-			function guard() {
-				try { requireAccount(target.account); }
-				catch (error) { block(error); throw error; }
+			function block(cause: unknown) {
+				if (attempt.progress.kind !== "blocked") attempt.progress = { kind: "blocked", cause };
 			}
 			function commit() {
 				if (attempt.progress.kind === "hidden" || attempt.progress.kind === "hidden-quota") attempt.progress = { kind: "committed" };
@@ -134,6 +143,7 @@ export function createNativeRouting(
 			}
 			try {
 				options.signal?.throwIfAborted();
+				const guard = requestGuard(target.account, repository, cwd);
 				guard();
 				active = reuse ? source : destination(target);
 				let requestOptions = options;
@@ -147,40 +157,20 @@ export function createNativeRouting(
 				options.signal?.throwIfAborted();
 				guard();
 				const signal = options.signal ? AbortSignal.any([options.signal, quotaAbort.signal]) : quotaAbort.signal;
-				const hooks: O = {
+				const protectedOptions = protectChat(guard, {
 					...requestOptions, signal, maxRetries: requestOptions.maxRetries ?? 0,
 					fetch: async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-						try {
-							guard();
-							const response = await (requestOptions.fetch ?? globalThis.fetch)(input, init);
-							observe(await decodeQuotaResponse(target.account, response, options.signal));
-							guard();
-							return response;
-						} catch (error) { block(error); throw error; }
+						const response = await (requestOptions.fetch ?? globalThis.fetch)(input, init);
+						observe(await decodeQuotaResponse(target.account, response, options.signal));
+						return response;
 					},
-					onPayload: async (...args: Parameters<NonNullable<StreamOptions["onPayload"]>>) => {
-						try {
-							guard();
-							const value = await requestOptions.onPayload?.(...args);
-							guard();
-							return value;
-						} catch (error) { block(error); throw error; }
-					},
-					onResponse: async (...args: Parameters<NonNullable<StreamOptions["onResponse"]>>) => {
-						try {
-							guard();
-							await requestOptions.onResponse?.(...args);
-							guard();
-						} catch (error) { block(error); throw error; }
-					},
-					onProviderStreamEvent: async (...args: Parameters<NonNullable<StreamOptions["onProviderStreamEvent"]>>) => {
-						try {
-							if (rawHasOutput(args[0])) commit();
-							observe(decodeQuotaPayload(target.account, args[0]));
-							guard();
-							await requestOptions.onProviderStreamEvent?.(...args);
-							guard();
-						} catch (error) { block(error); throw error; }
+				}, block);
+				const hooks = {
+					...protectedOptions,
+					onProviderStreamEvent: (event: unknown, model: Model<Api>) => {
+						if (rawHasOutput(event)) commit();
+						observe(decodeQuotaPayload(target.account, event));
+						return protectedOptions.onProviderStreamEvent!(event, model);
 					},
 				};
 				for await (const event of native(target, active, hooks)) {
@@ -217,10 +207,10 @@ export function createNativeRouting(
 			return { kind: "stopped", terminal, start };
 		}
 		(async () => {
-			const targets = prepare();
+			const targets = prepare(repository);
 			for (let index = 0; index < targets.length; index++) {
 				const target = targets[index];
-				const reuse = index === 0 && ingress?.credential === target.account.credential && source.id === target.modelId;
+				const reuse = index === 0 && source.provider === target.account.credential && source.id === target.modelId;
 				const outcome = await consume(target, reuse);
 				if (outcome.kind === "quota-before-output" && index + 1 < targets.length) continue;
 				if (outcome.start) output.push(outcome.start);
@@ -239,23 +229,23 @@ export function createNativeRouting(
 	}
 
 	function codexProvider(entry: CodexAccount): Provider<CodexApi> {
-		function prepare(source: Model<CodexApi>) {
-			requireAccount(entry);
+		function prepare(source: Model<CodexApi>, repository: RepoScope) {
+			requireAccount(entry, repository);
 			codexSource(source);
-			return candidates({ kind: "codex-policy", modelId: codexModelId(source.id) });
+			return candidates({ kind: "codex-policy", modelId: codexModelId(source.id) }, repository);
 		}
 		const stream: Provider<CodexApi>["stream"] = <T extends CodexApi>(source: Model<T>, transcript: TranscriptContext, options?: ApiStreamOptions<T>) => openStream(
-			{ ...source, provider: entry.credential }, options ?? {}, () => prepare(source),
+			{ ...source, provider: entry.credential }, options ?? {}, repository => prepare(source, repository),
 			target => {
 				const model = physical(target);
 				if (!hasApi(model, source.api)) throw new Error("Configured Codex target has an incompatible API");
 				return model;
 			},
-			(_target, model, hooks) => codex.stream<CodexApi>(model, transcript, hooks), entry,
+			(_target, model, hooks) => codex.stream<CodexApi>(model, transcript, hooks),
 		);
 		const streamSimple: Provider<CodexApi>["streamSimple"] = (source, transcript, options = {}) => openStream(
-			{ ...source, provider: entry.credential }, options, () => prepare(source),
-			target => codexSource(physical(target)), (_target, model, hooks) => codex.streamSimple(model, transcript, hooks), entry,
+			{ ...source, provider: entry.credential }, options, repository => prepare(source, repository),
+			target => codexSource(physical(target)), (_target, model, hooks) => codex.streamSimple(model, transcript, hooks),
 		);
 		return {
 			...codex, id: entry.credential, name: `${codex.name} (${entry === WORK_ACCOUNT ? "work" : "personal"})`,
@@ -266,20 +256,17 @@ export function createNativeRouting(
 		};
 	}
 	const copilotStream: Provider<CopilotApi>["stream"] = <T extends CopilotApi>(source: Model<T>, transcript: TranscriptContext, options?: ApiStreamOptions<T>) => {
-		requireAccount(COPILOT_ACCOUNT);
-		return copilot.stream({ ...source, provider: COPILOT_ACCOUNT.credential }, transcript, protectChat(() => requireAccount(COPILOT_ACCOUNT), options));
+		return copilot.stream({ ...source, provider: COPILOT_ACCOUNT.credential }, transcript, protectChat(requestGuard(COPILOT_ACCOUNT), options));
 	};
 	const copilotSimple: Provider<CopilotApi>["streamSimple"] = (source, transcript, options) => {
-		requireAccount(COPILOT_ACCOUNT);
-		return copilot.streamSimple({ ...source, provider: COPILOT_ACCOUNT.credential }, transcript, protectChat(() => requireAccount(COPILOT_ACCOUNT), options));
+		return copilot.streamSimple({ ...source, provider: COPILOT_ACCOUNT.credential }, transcript, protectChat(requestGuard(COPILOT_ACCOUNT), options));
 	};
 	const nativeClassify = copilot.classify;
 	if (!nativeClassify) throw new Error("SDK Copilot classifier is missing");
 	const classify: NonNullable<Provider["classify"]> = async (source, transcript, options) => {
 		const model = { ...source, provider: COPILOT_ACCOUNT.credential };
 		try {
-			requireAccount(COPILOT_ACCOUNT);
-			return await nativeClassify(model, transcript, protectClassifier(() => requireAccount(COPILOT_ACCOUNT), options));
+			return await nativeClassify(model, transcript, protectRequest(requestGuard(COPILOT_ACCOUNT), options));
 		} catch (error) {
 			return {
 				api: model.api, provider: model.provider, model: model.id, answers: {},
@@ -292,17 +279,12 @@ export function createNativeRouting(
 		...copilot, auth: guardedAuth(copilot.auth, () => allowed(COPILOT_ACCOUNT), () => requireAccount(COPILOT_ACCOUNT)),
 		...guardedAvailability(copilot, () => allowed(COPILOT_ACCOUNT)), stream: copilotStream, streamSimple: copilotSimple, classify,
 	};
-	let reviewModels: readonly Model<Api>[] = [];
-	if (policy.review) {
-		try { reviewModels = [reviewModel(policy.review, copilot.getModels().find(model => model.id === policy.review?.primary), codex.getModels().find(model => model.id === policy.review?.fallback))]; }
-		catch {}
-	}
 	const review: Provider = {
 		id: REVIEW, name: "Profile review", getModels: () => reviewModels, getAllModels: () => reviewModels,
 		auth: { apiKey: {
 			name: "Review routing",
 			async check() { return reviewAllowed() ? { type: "api_key" as const, source: "routing" } : undefined; },
-			async resolve() { requireReview(); return { auth: {}, source: "routing" }; },
+			async resolve() { requireReview(scope()); return { auth: {}, source: "routing" }; },
 		} },
 		filterModels: models => reviewAllowed() ? models : [],
 		filterAllModels: models => reviewAllowed() ? models : [],
@@ -310,7 +292,7 @@ export function createNativeRouting(
 		streamSimple(source, transcript, options: SimpleStreamOptions = {}) {
 			return openStream(
 				{ ...source, provider: REVIEW }, options,
-				() => selectAvailable(requireReview(source)), physical,
+				repository => selectAvailable(requireReview(repository, source)), physical,
 				(target, model, hooks) => target.account.credential === COPILOT_ACCOUNT.credential
 					? copilot.streamSimple(copilotSource(model), transcript, hooks)
 					: codex.streamSimple(codexSource(model), transcript, hooks),
@@ -322,7 +304,7 @@ export function createNativeRouting(
 		thinkingLevels: getSupportedThinkingLevels(model), input: model.input,
 		contextWindow: model.contextWindow, maxTokens: model.maxTokens,
 		route(request) {
-			return { model: physical(candidates({ kind: "codex-policy", modelId: codexModelId(model.id) })[0]), thinkingLevel: request.thinkingLevel };
+			return { model: physical(candidates({ kind: "codex-policy", modelId: codexModelId(model.id) }, scope())[0]), thinkingLevel: request.thinkingLevel };
 		},
 	}));
 	if (policy.review && !reviewModels.length) selections.push({

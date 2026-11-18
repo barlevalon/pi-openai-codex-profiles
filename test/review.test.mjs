@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,9 @@ const sse = events => events.map(event => `event: ${event.type}\ndata: ${JSON.st
 
 for (const mode of ["json", "print"]) for (const finish of ["copilot", "length"]) test(`headless ${mode} review discloses Codex contribution when finishing with ${finish}`, { timeout: 25000 }, async t => {
   const directory = mkdtempSync(join(tmpdir(), "review-notice-"));
+  const cwd = join(directory, "checkout");
+  mkdirSync(cwd);
+  assert.equal(spawnSync("git", ["-C", cwd, "init", "-q"]).status, 0);
   const requests = [];
   let copilotRequests = 0;
   const server = createServer((request, response) => {
@@ -63,7 +66,7 @@ for (const mode of ["json", "print"]) for (const finish of ["copilot", "length"]
   await once(server, "listening");
   t.after(() => { server.closeAllConnections(); server.close(); rmSync(directory, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${server.address().port}`;
-  writeFileSync(join(directory, "codex-routing-policy.json"), JSON.stringify({ version: 1, copilotProfile: "personal", accountOrder: ["personal"], review: { copilotModel: "claude-sonnet-5.5", codexFallbackModel: "gpt-5.6-luna" } }));
+  writeFileSync(join(directory, "codex-routing-policy.json"), JSON.stringify({ version: 1, copilotProfile: "work", accountOrder: ["personal"], work: { roots: [directory] }, review: { copilotModel: "claude-sonnet-5.5", codexFallbackModel: "gpt-5.6-luna" } }));
   writeFileSync(join(directory, "auth.json"), JSON.stringify({
     "openai-codex:personal": { type: "oauth", access: token, refresh: "fake", expires: Date.now() + 86400000 },
     "github-copilot": { type: "api_key", key: "fake-copilot" },
@@ -74,7 +77,7 @@ for (const mode of ["json", "print"]) for (const finish of ["copilot", "length"]
   } }));
   writeFileSync(join(directory, "settings.json"), JSON.stringify({ retry: { enabled: false }, compaction: { enabled: false } }));
   const child = spawn("pi", ["--offline", "--no-mcp", "--no-context-files", "--no-approve", "--mode", mode === "print" ? "text" : mode, "--print", "--no-session", "--thinking", "high", "--model", "profile-review/claude-sonnet-5.5", "-e", join(root, "index.ts"), "-e", join(root, "test/host-probe.ts"), "--", "local fixture review"], {
-    cwd: directory, env: { ...process.env, PI_CODING_AGENT_DIR: directory, ROUTING_SCENARIO: JSON.stringify({ agent: true, review: true }) },
+    cwd, env: { ...process.env, PI_CODING_AGENT_DIR: directory, ROUTING_SCENARIO: JSON.stringify({ agent: true, review: true }) },
     timeout: 15000, stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";

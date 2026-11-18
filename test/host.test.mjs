@@ -23,7 +23,7 @@ async function host(scenario, check) {
   const personalToken = token("personal");
   const workToken = token("work");
   if (!scenario.profile) {
-    if (scenario.policy !== "missing") writeFileSync(join(dir, "codex-routing-policy.json"), scenario.policy === "malformed" ? "{" : JSON.stringify(scenario.policy ?? { version: 1, copilotProfile: "personal", accountOrder: scenario.order ?? ["work", "personal"], work: { githubOwners: ["example-org"] }, review: { copilotModel: scenario.reviewId ?? "claude-sonnet-5.5", codexFallbackModel: scenario.fallbackId ?? "gpt-5.6-luna" } }));
+    if (scenario.policy !== "missing") writeFileSync(join(dir, "codex-routing-policy.json"), scenario.policy === "malformed" ? "{" : JSON.stringify(scenario.policy ?? { version: 1, copilotProfile: "work", accountOrder: scenario.order ?? ["work", "personal"], work: { githubOwners: ["example-org"] }, review: { copilotModel: scenario.reviewId ?? "claude-sonnet-5.5", codexFallbackModel: scenario.fallbackId ?? "gpt-5.6-luna" } }));
     if (scenario.projectPolicy) writeFileSync(join(cwd, "codex-routing-policy.json"), JSON.stringify({ version: 1, accountOrder: ["work", "personal"], work: { githubOwners: ["example-org"] } }));
     writeFileSync(join(dir, "auth.json"), JSON.stringify({
       "openai-codex:personal": { type: "oauth", access: personalToken, refresh: "fake-personal", expires: Date.now() + 86400000 },
@@ -111,20 +111,20 @@ const cases = [
   { name: "all account cooldowns error before auth", eligible: true, cool: ["personal-codex", "work-codex"], expected: [], answer: "codex-policy", stop: "error" },
   { name: "corrupt personal state errors without work substitution", eligible: true, badState: "personal-codex", expected: [], answer: "codex-policy", stop: "error" },
   { name: "missing work auth is not quota exhaustion", eligible: true, noWorkAuth: true, expected: [], answer: "codex-policy", stop: "error" },
-  { name: "missing review auth is not quota exhaustion", review: true, noCopilotAuth: true, expected: [], answer: "github-copilot", stop: "error" },
-  { name: "configured missing primary is an error-only review selection", review: true, reviewId: "not-in-native-catalog", thinking: "off", expected: [], answer: "profile-review", stop: "error" },
-  { name: "configured missing fallback never substitutes neighboring model", review: true, fallbackId: "not-in-native-catalog", thinking: "off", expected: [], answer: "profile-review", stop: "error" },
-  { name: "runtime capability mismatch blocks review before physical auth", review: true, mismatch: true, expected: [], answer: "profile-review", stop: "error" },
+  { name: "missing review auth is not quota exhaustion", review: true, eligible: true, noCopilotAuth: true, expected: [], answer: "github-copilot", stop: "error" },
+  { name: "configured missing primary is an error-only review selection", review: true, eligible: true, reviewId: "not-in-native-catalog", thinking: "off", expected: [], answer: "profile-review", stop: "error" },
+  { name: "configured missing fallback never substitutes neighboring model", review: true, eligible: true, fallbackId: "not-in-native-catalog", thinking: "off", expected: [], answer: "profile-review", stop: "error" },
+  { name: "runtime capability mismatch blocks review before physical auth", review: true, eligible: true, mismatch: true, expected: [], answer: "profile-review", stop: "error" },
   { name: "review capability mismatch does not break personal core", mismatch: true, expected: ["personal"], answer: "openai-codex:personal" },
-  { name: "configured review catalog advertises compatible shared limits", review: true, catalogOnly: true },
-  { name: "another native Copilot ID has a derived review selection", review: true, reviewId: "gpt-5.6-luna", catalogOnly: true },
-  { name: "same-family review uses exactly the configured primary", review: true, reviewId: "gpt-5.6-luna", mode: "copilot-ok", expected: ["copilot"], answer: "github-copilot" },
-  { name: "same-family review quota uses a factual fallback notice", review: true, reviewId: "gpt-5.6-luna", expected: ["copilot", "personal"], answer: "openai-codex:personal" },
-  { name: "stale direct review selection is rejected", review: true, staleReview: true, mode: "copilot-ok", expected: ["copilot"], answer: "github-copilot" },
-  { name: "all review targets cooling fails before auth", review: true, cool: ["copilot-review", "personal-codex"], expected: [], answer: "profile-review", stop: "error" },
-  { name: "last Copilot HTTP quota cancellation is error not caller abort", review: true, order: ["personal"], cool: ["personal-codex"], retries: 3, expected: ["copilot"], answer: "github-copilot", stop: "error" },
+  { name: "configured review catalog advertises compatible shared limits", review: true, eligible: true, catalogOnly: true },
+  { name: "another native Copilot ID has a derived review selection", review: true, eligible: true, reviewId: "gpt-5.6-luna", catalogOnly: true },
+  { name: "same-family review uses exactly the configured primary", review: true, eligible: true, reviewId: "gpt-5.6-luna", mode: "copilot-ok", expected: ["copilot"], answer: "github-copilot" },
+  { name: "same-family review quota uses a factual fallback notice", review: true, order: ["personal"], eligible: true, reviewId: "gpt-5.6-luna", expected: ["copilot", "personal"], answer: "openai-codex:personal" },
+  { name: "stale direct review selection is rejected", review: true, eligible: true, staleReview: true, mode: "copilot-ok", expected: ["copilot"], answer: "github-copilot" },
+  { name: "all review targets cooling fails before auth", review: true, order: ["personal"], eligible: true, cool: ["copilot-review", "personal-codex"], expected: [], answer: "profile-review", stop: "error" },
+  { name: "last Copilot HTTP quota cancellation is error not caller abort", review: true, eligible: true, order: ["personal"], cool: ["personal-codex"], retries: 3, expected: ["copilot"], answer: "github-copilot", stop: "error" },
   { name: "unreadable work state avoids work refresh and uses personal", eligible: true, expired: true, badState: "work-codex", expected: ["personal"], answer: "openai-codex:personal" },
-  { name: "malformed Copilot state cannot authorize substitution", review: true, badState: "copilot-review", expected: [], answer: "profile-review", stop: "error" },
+  { name: "malformed Copilot state cannot authorize substitution", review: true, eligible: true, badState: "copilot-review", expected: [], answer: "profile-review", stop: "error" },
   { name: "personal alias uses work first", eligible: true, mode: "success", expected: ["work"], answer: "openai-codex:work" },
   { name: "work alias uses work inside eligible repositories", alias: "openai-codex:work", eligible: true, mode: "success", expected: ["work"], answer: "openai-codex:work" },
   { name: "personal alias stays personal outside eligible repositories", expected: ["personal"], answer: "openai-codex:personal" },
@@ -157,12 +157,12 @@ const cases = [
   { name: "stream hook failure never falls back", eligible: true, mode: "event-hook", expected: ["work"], answer: "openai-codex:work", stop: "error" },
   { name: "malformed stream never falls back", eligible: true, mode: "malformed", expected: ["work"], answer: "openai-codex:work", stop: "error" },
   { name: "direct physical personal follows account policy", eligible: true, direct: "openai-codex:personal", mode: "quota", expected: ["work", "personal"], answer: "openai-codex:personal" },
-  { name: "review Copilot quota falls back only to personal outside eligible repositories", review: true, expected: ["copilot", "personal"], answer: "openai-codex:personal" },
-  { name: "failed Codex review attempt does not claim a fallback contribution", review: true, reviewError: true, expected: ["copilot", "personal"], answer: "openai-codex:personal", stop: "error" },
+  { name: "review outside eligible repositories refuses before transport without fallback", review: true, expected: [], answer: "profile-review", stop: "error" },
+  { name: "failed Codex review attempt does not claim a fallback contribution", review: true, order: ["personal"], eligible: true, reviewError: true, expected: ["copilot", "personal"], answer: "openai-codex:personal", stop: "error" },
   { name: "review follows Copilot work personal plan", review: true, eligible: true, mode: "quota", expected: ["copilot", "work", "personal"], answer: "openai-codex:personal" },
-  { name: "review success keeps Copilot attribution", review: true, lowLevelReview: true, mode: "copilot-ok", expected: ["copilot"], answer: "github-copilot" },
-  { name: "ordinary Copilot remains untouched on quota", direct: "github-copilot", expected: ["copilot"], answer: "github-copilot", stop: "error" },
-  { name: "review generic 429 never substitutes model family", review: true, mode: "copilot-rate", expected: ["copilot"], answer: "github-copilot", stop: "error" },
+  { name: "review success keeps Copilot attribution", review: true, eligible: true, lowLevelReview: true, mode: "copilot-ok", expected: ["copilot"], answer: "github-copilot" },
+  { name: "ordinary Copilot remains untouched on quota", direct: "github-copilot", eligible: true, expected: ["copilot"], answer: "github-copilot", stop: "error" },
+  { name: "review generic 429 never substitutes model family", review: true, eligible: true, mode: "copilot-rate", expected: ["copilot"], answer: "github-copilot", stop: "error" },
 ];
 for (const scenario of cases) test(`host Pi ${scenario.name}`, { timeout: 30000 }, () => host(scenario));
 
@@ -202,8 +202,8 @@ test("host Pi child-shaped processes share cooldown but independently resolve cw
 });
 
 test("host Pi review cooldown is shared across child-shaped invocations", { timeout: 30000 }, async () => {
-  await host({ review: true, expected: ["copilot", "personal"], answer: "openai-codex:personal" }, async ({ dir }) => {
-    await host({ profile: dir, review: true, expected: ["personal"], answer: "openai-codex:personal" });
+  await host({ review: true, order: ["personal"], eligible: true, expected: ["copilot", "personal"], answer: "openai-codex:personal" }, async ({ dir }) => {
+    await host({ profile: dir, review: true, eligible: true, expected: ["personal"], answer: "openai-codex:personal" });
   });
 });
 

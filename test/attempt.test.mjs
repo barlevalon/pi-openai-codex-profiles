@@ -1,9 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import test from "node:test";
-import { nativeProbe } from "./native-probe.mjs";
+import { probeTest } from "./native-probe.mjs";
 
 for (const [mode, count, ending, evidence] of [
   ["hidden-quota", 2, "stop", 1],
@@ -36,10 +32,7 @@ for (const [mode, count, ending, evidence] of [
   ["event-hook", 1, "error", 1],
   ["missing-terminal", 1, "error", 0],
   ["missing-after-output", 1, "error", 0],
-]) test(`attempt outcome ${mode}`, { timeout: 30000 }, async t => {
-  const directory = mkdtempSync(join(tmpdir(), "codex-attempt-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const result = await nativeProbe("attempt", directory, directory, { DOMAIN_MODE: mode });
+]) probeTest(`attempt outcome ${mode}`, "attempt", result => {
   assert.equal(result.calls.length, count);
   assert.equal(result.stopReason, ending);
   assert.equal(result.provider, count === 2 || mode === "last-internal-quota" ? "openai-codex:personal" : "openai-codex:work");
@@ -49,4 +42,4 @@ for (const [mode, count, ending, evidence] of [
   if (mode === "terminal-usage") assert.equal(result.usage.input, 2);
   if (mode === "terminal-cost") assert.equal(result.usage.cost.total, 0.1);
   if (mode === "provider-cost-marker") assert.equal(result.usage.cost.totalFromProvider, true);
-});
+}, { DOMAIN_MODE: mode });

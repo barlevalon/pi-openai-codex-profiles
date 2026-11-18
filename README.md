@@ -1,6 +1,6 @@
 # Pi OpenAI Codex Profiles
 
-Keep separate `personal` and `work` OpenAI Codex OAuth identities in Pi. A profile-local policy assigns provider accounts to personal or repository-restricted work membership. Each account keeps its native credential slot and independent quota history. Without a valid policy, only personal Codex is authorized. Managed Copilot is denied and no review model is advertised. Requires Pi 1.5.2's native provider and virtual-model APIs.
+Keep separate `personal` and `work` OpenAI Codex OAuth identities in Pi. A profile-local policy orders Codex accounts and restricts managed Copilot to eligible work repositories. Each account keeps its native credential slot and independent quota history. Without a valid policy, only personal Codex is authorized. Managed Copilot is denied and no review model is advertised. Requires Pi 1.5.2's native provider and virtual-model APIs.
 
 ## Install and update
 
@@ -51,7 +51,7 @@ The minimal policy is:
 
 - `version` is required and must equal `1`.
 - `accountOrder` is required. Its only valid values are `["personal"]`, `["personal", "work"]`, and `["work", "personal"]`. It enrolls and orders Codex accounts, not a shared work budget.
-- `copilotProfile` optionally assigns the existing `github-copilot` credential to `"personal"` or `"work"`. The assignment covers ordinary chat, classifiers, and review routing. Omission denies managed Copilot. It never implies personal ownership.
+- `copilotProfile` optionally enables the existing `github-copilot` credential with the sole valid value `"work"`. Copilot is work-only for ordinary chat, classifiers, and review routing. Omission denies managed Copilot. `"personal"` invalidates the policy.
 - `work` has optional `githubOwners` and `roots` arrays. Omitted arrays mean `[]`. Any work-owned account requires at least one valid owner or root. This includes work Copilot with a personal-only Codex order. Selectors alone do not enroll Work Codex.
 - `githubOwners` contains valid GitHub owners, matched case-insensitively. Owner names cannot contain consecutive hyphens or start or end with a hyphen.
 - `roots` contains absolute paths or paths beginning with `~/`. The latter resolve against the home directory at load time. Other characters are literal. Environment and command interpolation are not supported.
@@ -59,7 +59,7 @@ The minimal policy is:
 
 Unknown fields, invalid types, invalid selectors, and malformed JSON invalidate the entire policy. Credential, header, and endpoint fields are not supported. Symlinks, nonregular files, unreadable files, and files larger than 64 KiB also fail closed. A generic warning reports personal-only routing with review disabled. A missing file is silent. Both Codex aliases and guarded Copilot remain registered after failure. Their complete native catalogs remain inspectable. Availability filters do not grant permission. Policy snapshots are immutable until `/reload` or a new extension instance.
 
-Existing policies that used Copilot must add `copilotProfile` explicitly. Use `"work"` with nonempty work selectors for a work-owned credential, or `"personal"` for a personal credential. Reload after this input migration. No credentials move between native slots.
+Existing policies that used Copilot must set `copilotProfile` to `"work"` with nonempty work selectors. Remove any `"personal"` assignment and reload. No credentials move between native slots.
 
 ### Work eligibility
 
@@ -68,11 +68,11 @@ A repository qualifies through either of these checks:
 - Its single local origin is an exact `github.com/<configured-owner>/<repo>` HTTPS or Git SSH URL. Includes and multiple origin URLs cannot qualify through origin.
 - Its canonical checkout is a strict descendant of a configured root. A linked worktree outside the root also qualifies when its primary checkout is beneath that root and shares the same common Git directory.
 
-The nearest actual Git repository owns the decision. A root container itself, a directory prefix, or a symlink into an unrelated repository does not qualify through the root check. Missing roots grant nothing. Roots are canonicalized again at every guard. Git discovery scrubs `GIT_*` variables, disables config includes for origin lookup, and bounds command time and output.
+The nearest actual Git repository owns the decision. A root container itself, a directory prefix, or a symlink into an unrelated repository does not qualify through the root check. Missing roots grant nothing. Roots are canonicalized when repository membership is resolved. Git discovery scrubs `GIT_*` variables, disables config includes for origin lookup, and bounds command time and output.
 
-Routing uses Pi's current `ctx.cwd`, not a shell tool's working directory or an ambient startup directory. Eligible repositories use the configured Codex order. Other, unknown, and nonrepository locations use personal Codex only. A work-owned Copilot credential is unavailable there. Work requires a bound Pi context. A matching direct personal Codex source can be reused without a context or registry lookup.
+Routing uses Pi's current `ctx.cwd`, not a shell tool's working directory or an ambient startup directory. Eligible repositories use the configured Codex order. Other, unknown, and nonrepository locations use personal Codex only. Copilot is unavailable there, including for reviews. Work requires a bound Pi context. A matching direct personal Codex source can be reused without a context or registry lookup.
 
-Session start, model selection, and session-tree changes bind the context and await native offline availability refresh. Cached availability remains provisional. Auth, fetch, and callback boundaries recheck current membership. Known cooldowns remove eligible routed targets. If all targets are cooling down, the request fails before authentication.
+Session start, model selection, and session-tree changes bind the context and await native offline availability refresh. Cached availability remains provisional. Each stream resolves repository membership once. Fetch and callback boundaries only check that the bound context still has the same `cwd`; they do not rerun Git discovery. A changed `cwd` stops the stream. Native authentication and availability check membership independently. Known cooldowns remove eligible routed targets. If all targets are cooling down, the request fails before authentication.
 
 ## Use native account logins
 
@@ -97,7 +97,7 @@ Ownership authorizes OAuth refresh at its start. Once a refresh starts, the rota
 /model profile-review/<configured-copilot-model-id>
 ```
 
-The derived selection tries exactly the configured native Copilot chat model. Its account must belong to an eligible profile before any budget read or physical authentication. A work review is unavailable outside work scope, not silently converted to a personal reviewer or reported as quota exhaustion. The pstack role selector rejects an unavailable exact configured model. Choosing a personal reviewer remains explicit caller behavior.
+The derived selection tries exactly the configured native Copilot chat model. Copilot requires an eligible work repository before any budget read or physical authentication. Reviews outside work scope fail without transport or Codex fallback. Scope denial never silently selects a personal reviewer or counts as quota exhaustion. The pstack role selector rejects an unavailable exact configured model. Choosing a personal reviewer remains explicit caller behavior.
 
 Confirmed Copilot quota exhaustion falls back to exactly the configured Codex model under the repository account policy. No review model is advertised without a valid `review` policy.
 
@@ -105,7 +105,7 @@ The entry advertises shared thinking and input capabilities and the smaller cont
 
 A notice reports use of the configured Codex fallback without assuming model-family diversity. JSON and print final answers also include the notice, including length termination and a Codex tool-use response followed by a Copilot final answer in the same prompt.
 
-Ordinary `github-copilot` calls add ownership checks to native raw, simple, classifier, and auth operations. They retain native options, retries, signals, immediate events, OAuth model filtering, and classifier results. They do not enter quota routing, buffer starts, or receive internal quota cancellation. The review provider accepts provider-neutral `streamSimple` calls and rejects API-specific `stream` calls. This package does not modify review-role settings or replace the native footer.
+Ordinary `github-copilot` calls add work-scope checks to native raw, simple, classifier, and auth operations. They retain native options, retries, signals, immediate events, OAuth model filtering, and classifier results. They do not enter quota routing, buffer starts, or receive internal quota cancellation. The review provider accepts provider-neutral `streamSimple` calls and rejects API-specific `stream` calls. This package does not modify review-role settings or replace the native footer.
 
 ## Quota and stream rules
 
@@ -138,6 +138,7 @@ Set `PI_PACKAGE_TEST_SOURCE` to a Git source to check an installed revision inst
 ## Implementation reference
 
 - `policy.ts` checks raw policy structure with a private TypeBox schema, then constructs copied, frozen profile membership.
+- `bounded-file.ts` shares the capped file reader used for policy and quota records.
 - `identifiers.ts` shares explicit ASCII, GitHub owner, and unpadded-text rules. Configured review IDs retain their stricter grammar in `policy.ts`.
 - `targets.ts` correlates native credentials and budgets and performs pure eligibility and candidate selection.
 - `scope.ts` reads exact Git origin records and verifies checkout provenance.

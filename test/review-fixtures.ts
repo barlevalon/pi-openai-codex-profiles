@@ -14,23 +14,23 @@ export async function reviewFixtures(ctx) {
 	const codex = nativeProviders().codex;
 	const copilot = nativeProviders().copilot;
 	const config = { copilotModel: "claude-sonnet-5.5", codexFallbackModel: "gpt-5.6-luna" };
-	const binding = parsePolicy({ version: 1, copilotProfile: "personal", accountOrder: ["personal"], review: config }).review;
+	const binding = parsePolicy({ version: 1, accountOrder: ["personal"], review: config }).review;
 	const primary = copilot.getModels().find(model => model.id === config.copilotModel)!;
 	const fallback = codex.getModels().find(model => model.id === config.codexFallbackModel)!;
-	assert.doesNotThrow(() => reviewModel(binding, { ...primary, inputLimits: undefined }, fallback));
-	assert.doesNotThrow(() => reviewModel(binding, { ...primary, inputLimits: { images: { resize: { maxWidth: 2000 } } } }, fallback));
-	assert.doesNotThrow(() => reviewModel(binding, primary, { ...fallback, inputLimits: undefined }, reviewModel(binding, primary, fallback)));
+	assert.ok(reviewModel(binding, { ...primary, inputLimits: undefined }, fallback));
+	assert.ok(reviewModel(binding, { ...primary, inputLimits: { images: { resize: { maxWidth: 2000 } } } }, fallback));
+	assert.ok(reviewModel(binding, primary, { ...fallback, inputLimits: undefined }, reviewModel(binding, primary, fallback)));
 	for (const inputLimits of [{ maxRequestBytes: 1024 }, { images: { maxPerMessage: 2 } }, { images: { resize: { maxWidth: 1234 } } }]) {
-		assert.throws(() => reviewModel(binding, { ...primary, inputLimits }, fallback), /incompatible/);
+		assert.equal(reviewModel(binding, { ...primary, inputLimits }, fallback), undefined);
 	}
-	assert.throws(() => reviewModel(binding, { ...primary, input: ["image"] }, fallback), /incompatible/);
-	assert.throws(() => reviewModel(binding, { ...primary, type: "image" }, fallback), /unavailable/);
-	assert.throws(() => reviewModel(binding, undefined, fallback), /unavailable/);
-	assert.throws(() => reviewModel(binding, primary, { ...fallback, id: "neighbor-model" }), /unavailable/);
+	assert.equal(reviewModel(binding, { ...primary, input: ["image"] }, fallback), undefined);
+	assert.equal(reviewModel(binding, { ...primary, type: "image" }, fallback), undefined);
+	assert.equal(reviewModel(binding, undefined, fallback), undefined);
+	assert.equal(reviewModel(binding, primary, { ...fallback, id: "neighbor-model" }), undefined);
 	let authCalls = 0;
 	const current = { ...ctx, modelRegistry: { find: (...args) => ctx.modelRegistry.find(...args), getApiKeyAndHeaders() { authCalls++; assert.fail("invalid review resolved physical auth"); } } };
 	for (const mode of ["disabled", "missing-native", "work-mismatch"]) {
-		const policy = parsePolicy({ version: 1, copilotProfile: "personal", accountOrder: ["work", "personal"], work: { githubOwners: ["example-org"] }, ...(mode === "disabled" ? {} : { review: config }) });
+		const policy = parsePolicy({ version: 1, copilotProfile: "work", accountOrder: ["work", "personal"], work: { githubOwners: ["example-org"] }, ...(mode === "disabled" ? {} : { review: config }) });
 		const registry = mode === "work-mismatch" ? { ...current.modelRegistry, find(provider, id) {
 			const model = ctx.modelRegistry.find(provider, id);
 			return provider === "openai-codex:work" ? { ...model, inputLimits: { maxRequestBytes: 1234 } } : model;
@@ -56,7 +56,7 @@ export async function reviewFixtures(ctx) {
 	const otherCodex = codex.getModels().find(model => model.id !== fallback.id && JSON.stringify(model.inputLimits) === JSON.stringify(fallback.inputLimits));
 	assert.ok(otherCodex, "the native catalog supplies a second representative Codex model");
 	const alternate = { ...config, codexFallbackModel: otherCodex.id };
-	const alternatePolicy = parsePolicy({ version: 1, copilotProfile: "personal", accountOrder: ["personal"], review: alternate });
+	const alternatePolicy = parsePolicy({ version: 1, copilotProfile: "work", accountOrder: ["personal"], work: { githubOwners: ["example-org"] }, review: alternate });
 	const advertised = reviewModel(alternatePolicy.review, primary, otherCodex);
 	const quota = createQuotaLedger(join(getAgentDir(), "review-alternate"), assert.fail);
 	const raw = { ...codex, streamSimple(model) {

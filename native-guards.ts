@@ -2,7 +2,7 @@ import { hasApi, isModelType } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import type { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-copilot";
-import type { Api, ClassifierOptions, Provider, ProviderAuth, StreamOptions } from "@earendil-works/pi-ai";
+import type { Api, Provider, ProviderAuth, ProviderRequestOptions, StreamOptions } from "@earendil-works/pi-ai";
 
 export function nativeProviders() {
 	const providers = builtinProviders();
@@ -77,54 +77,30 @@ export function guardedAvailability<A extends Api>(native: Provider<A>, allowed:
 	};
 }
 
-export function protectChat<O extends StreamOptions>(guard: () => void, options: O | undefined): O;
-export function protectChat(guard: () => void, options: StreamOptions | undefined): StreamOptions {
-	return {
-		...options,
-		async fetch(input, init) {
+function guardCallback<Args extends unknown[], Result>(guard: () => void, callback: (...args: Args) => Result, failed?: (error: unknown) => void) {
+	return async (...args: Args): Promise<Awaited<Result>> => {
+		try {
 			guard();
-			const response = await (options?.fetch ?? globalThis.fetch)(input, init);
-			guard();
-			return response;
-		},
-		async onPayload(payload, model) {
-			guard();
-			const result = await options?.onPayload?.(payload, model);
+			const result = await callback(...args);
 			guard();
 			return result;
-		},
-		async onResponse(response, model) {
-			guard();
-			await options?.onResponse?.(response, model);
-			guard();
-		},
-		async onProviderStreamEvent(event, model) {
-			guard();
-			await options?.onProviderStreamEvent?.(event, model);
-			guard();
-		},
+		} catch (error) { failed?.(error); throw error; }
 	};
 }
 
-export function protectClassifier(guard: () => void, options: ClassifierOptions | undefined): ClassifierOptions {
+export function protectRequest<M>(guard: () => void, options: ProviderRequestOptions<M> = {}, failed?: (error: unknown) => void): ProviderRequestOptions<M> {
 	return {
 		...options,
-		async fetch(input, init) {
-			guard();
-			const response = await (options?.fetch ?? globalThis.fetch)(input, init);
-			guard();
-			return response;
-		},
-		async onPayload(payload, model) {
-			guard();
-			const result = await options?.onPayload?.(payload, model);
-			guard();
-			return result;
-		},
-		async onResponse(response, model) {
-			guard();
-			await options?.onResponse?.(response, model);
-			guard();
-		},
+		fetch: guardCallback(guard, options.fetch ?? globalThis.fetch, failed),
+		onPayload: guardCallback(guard, (payload, model) => options.onPayload?.(payload, model), failed),
+		onResponse: guardCallback(guard, (response, model) => options.onResponse?.(response, model), failed),
+	};
+}
+
+export function protectChat<O extends StreamOptions>(guard: () => void, options: O | undefined, failed?: (error: unknown) => void): O;
+export function protectChat(guard: () => void, options: StreamOptions = {}, failed?: (error: unknown) => void): StreamOptions {
+	return {
+		...protectRequest(guard, options, failed),
+		onProviderStreamEvent: guardCallback(guard, (event, model) => options.onProviderStreamEvent?.(event, model), failed),
 	};
 }

@@ -26,7 +26,9 @@ copilot.stream(anthropic, transcript, { thinkingEnabled: true });
 ledger.observeDirect(observation);
 const workTarget: ModelTarget = { account: WORK_ACCOUNT, modelId: codexId };
 const copilotTarget: ModelTarget = { account: COPILOT_ACCOUNT, modelId: copilotId };
-const personal: Profile = { name: "personal", accounts: [PERSONAL_ACCOUNT, COPILOT_ACCOUNT] };
+const personal: Profile = { name: "personal", accounts: [PERSONAL_ACCOUNT] };
+// @ts-expect-error COPILOT_IS_WORK
+const copilotInPersonal: Profile = { name: "personal", accounts: [COPILOT_ACCOUNT] };
 const work: Profile = { name: "work", accounts: [WORK_ACCOUNT, COPILOT_ACCOUNT], criteria: { githubOwners: [], roots: ["/example/work"] } };
 const rawOptions: ApiStreamOptions<"openai-codex-responses"> = { reasoningEffort: "high" };
 const simpleOptions: SimpleStreamOptions = { reasoning: "high" };

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -9,10 +8,9 @@ import { fileURLToPath } from "node:url";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const target = resolve(process.env.PROFILE_SCOPE_TARGET ?? join(directory, ".."));
-const require = createRequire(import.meta.url);
 const sdkPackage = name => process.env.PROFILE_SCOPE_SDK
   ? join(resolve(process.env.PROFILE_SCOPE_SDK), "node_modules/@earendil-works", name)
-  : dirname(dirname(require.resolve(`@earendil-works/${name}`)));
+  : dirname(dirname(fileURLToPath(import.meta.resolve(`@earendil-works/${name}`))));
 const cli = join(sdkPackage("pi-coding-agent"), "dist/cli.js");
 const networkGuard = "data:text/javascript," + encodeURIComponent('globalThis.fetch = async input => { process.stderr.write(`Unexpected startup fetch ${String(input)}\\n`); process.exit(86); };');
 const chatId = "gpt-5.6-luna";
@@ -23,6 +21,7 @@ const scenarios = [
   { policy: "work", eligible: false },
   { policy: "work", eligible: true },
   { policy: "personal", eligible: false },
+  { policy: "personal", eligible: true },
 ].flatMap(scenario => ["api_key", "oauth"].map(credential => ({ ...scenario, credential })));
 
 async function probe(scenario) {
@@ -103,7 +102,7 @@ async function probe(scenario) {
 }
 
 for (const scenario of scenarios) {
-  const allowed = scenario.policy === "personal" || scenario.policy === "work" && scenario.eligible;
+  const allowed = scenario.policy === "work" && scenario.eligible;
   test(`native Copilot ${scenario.policy}, ${scenario.eligible ? "work" : "personal"} repository, ${scenario.credential}`, async t => {
     const trace = await probe(scenario);
     t.diagnostic(JSON.stringify(trace));
@@ -171,7 +170,9 @@ for (const scenario of scenarios) {
         assert.ok(trace.availableClassifiers.includes(trace.classifierId), "Keep native non-chat availability semantics");
       }
     });
-    if (["legacy", "personal", "work"].includes(scenario.policy)) {
+    if (scenario.policy === "personal") {
+      await t.test("personal Copilot policy is rejected", () => assert.match(trace.diagnostics, /Cannot load Codex routing policy/));
+    } else if (["legacy", "work"].includes(scenario.policy)) {
       await t.test("fixture policy is accepted", () => assert.doesNotMatch(trace.diagnostics, /Cannot load Codex routing policy/));
     }
   });

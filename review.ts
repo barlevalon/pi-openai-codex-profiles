@@ -10,16 +10,16 @@ function inputLimits(model: Model) {
 	return { ...limits, images: { ...imageLimits, resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4.5 * 1024 * 1024, jpegQuality: 80, ...resize } } };
 }
 
-export function reviewModel(binding: ReviewBinding | undefined, primary: Model | undefined, fallback: Model | undefined, advertised?: Model): Model {
-	if (!binding || !primary || !fallback || primary.type !== "chat" || fallback.type !== "chat" || primary.id !== binding.primary || fallback.id !== binding.fallback) throw new Error("Configured review targets are unavailable");
+export function reviewModel(binding: ReviewBinding | undefined, primary: Model | undefined, fallback: Model | undefined, advertised?: Model): Model | undefined {
+	if (!binding || !primary || !fallback || primary.type !== "chat" || fallback.type !== "chat" || primary.id !== binding.primary || fallback.id !== binding.fallback) return;
 	const levels = getSupportedThinkingLevels(primary).filter(level => getSupportedThinkingLevels(fallback).includes(level));
 	const input = primary.input.filter(kind => fallback.input.includes(kind));
-	if (!levels.length || !input.includes("text") || !isDeepStrictEqual(inputLimits(primary), inputLimits(fallback))) throw new Error("Configured review targets have incompatible capabilities");
+	if (!levels.length || !input.includes("text") || !isDeepStrictEqual(inputLimits(primary), inputLimits(fallback))) return;
 	if (advertised && (advertised.contextWindow > Math.min(primary.contextWindow, fallback.contextWindow)
 		|| advertised.maxTokens > Math.min(primary.maxTokens, fallback.maxTokens)
 		|| advertised.input.some(kind => !input.includes(kind))
 		|| getSupportedThinkingLevels(advertised).some(level => !levels.includes(level))
-		|| !isDeepStrictEqual(inputLimits(advertised), inputLimits(primary)))) throw new Error("Configured review targets have incompatible capabilities");
+		|| !isDeepStrictEqual(inputLimits(advertised), inputLimits(primary)))) return;
 	const allLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 	return {
 		...primary, provider: "profile-review", name: "Configured review with quota fallback", input,

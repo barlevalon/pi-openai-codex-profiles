@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { readBoundedFile } from "./bounded-file.ts";
 import { join } from "node:path";
 import type { Budget, BudgetState, ModelTarget } from "./targets.ts";
 import { readDirectObservation, type DirectObservation } from "./quota-protocol.ts";
@@ -8,6 +9,9 @@ export interface QuotaLedger {
 	observeDirect(observation: DirectObservation): void;
 	snapshot(candidates: readonly ModelTarget[], nowMs: number): ReadonlyMap<Budget, BudgetState>;
 }
+
+const MAX_OBSERVATION_BYTES = 256;
+const MAX_OBSERVATION_FILES = 4096;
 
 function storedDeadline(value: unknown, key: Budget): number {
 	if (!value || typeof value !== "object") throw new Error("Invalid quota observation");
@@ -30,24 +34,11 @@ export function createQuotaLedger(directory: string, warn: (message: string) => 
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 				files = [];
 			}
-			if (files.length > 4096) throw new Error("Too many quota observations");
+			if (files.length > MAX_OBSERVATION_FILES) throw new Error("Too many quota observations");
 			for (const file of files) {
 				if (!file.startsWith(`${key}.`) || !file.endsWith(".json")) continue;
-				const fd = openSync(join(directory, file), constants.O_RDONLY | constants.O_NOFOLLOW);
-				try {
-					const stat = fstatSync(fd);
-					if (!stat.isFile() || stat.size > 256) throw new Error("Invalid quota observation size");
-					const body = Buffer.alloc(257);
-					let lengthBytes = 0;
-					while (lengthBytes < body.length) {
-						const count = readSync(fd, body, lengthBytes, body.length - lengthBytes, lengthBytes);
-						if (count === 0) break;
-						lengthBytes += count;
-					}
-					if (lengthBytes > 256) throw new Error("Invalid quota observation size");
-					const value: unknown = JSON.parse(body.toString("utf8", 0, lengthBytes));
-					shared[key] = Math.max(shared[key], storedDeadline(value, key));
-				} finally { closeSync(fd); }
+				const value: unknown = JSON.parse(readBoundedFile(join(directory, file), MAX_OBSERVATION_BYTES).toString("utf8"));
+				shared[key] = Math.max(shared[key], storedDeadline(value, key));
 			}
 			const until = Math.max(local[key], shared[key]);
 			if (until > nowMs) return Object.freeze({ kind: "cooling", until });

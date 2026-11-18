@@ -2,8 +2,20 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
 
 const probe = fileURLToPath(new URL("./domain-probe.ts", import.meta.url));
+
+export function probeTest(name, kind, check = () => {}, extra = {}, probePath = probe) {
+  test(name, { timeout: 30000 }, async t => {
+    const directory = mkdtempSync(join(tmpdir(), "codex-probe-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    await check(await nativeProbe(kind, directory, directory, extra, probePath));
+  });
+}
 
 export async function nativeProbe(kind, directory, cwd = directory, extra = {}, probePath = probe) {
   const env = { ...process.env, ...extra, PI_CODING_AGENT_DIR: directory, DOMAIN_CASE: kind };

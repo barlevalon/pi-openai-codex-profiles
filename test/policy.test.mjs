@@ -85,15 +85,15 @@ test("configured review IDs stay narrower than source namespaces and roots rejec
   }
 });
 
-test("structural diagnostics reveal only schema-owned field labels", () => {
-  for (const [data, label] of [
-    [{ ...safe, copilotProfile: "private-invalid-profile" }, "copilotProfile"],
-    [{ ...safe, work: { roots: [123] } }, "work"],
-    [{ ...safe, review: { copilotModel: 123, codexFallbackModel: "model" } }, "review"],
-    [{ ...safe, "private-extra-field": "private-value" }, "policy"],
-    [{ ...safe, work: { "private-extra-field": "private-value" } }, "work"],
-    [{ ...safe, review: { ...full().review, "private-extra-field": "private-value" } }, "review"],
-  ]) assert.throws(() => parsePolicy(data), error => error.message.includes(label) && !error.message.includes("private"));
+test("structural diagnostics do not reveal private values", () => {
+  for (const data of [
+    { ...safe, copilotProfile: "private-invalid-profile" },
+    { ...safe, work: { roots: [123] } },
+    { ...safe, review: { copilotModel: 123, codexFallbackModel: "model" } },
+    { ...safe, "private-extra-field": "private-value" },
+    { ...safe, work: { "private-extra-field": "private-value" } },
+    { ...safe, review: { ...full().review, "private-extra-field": "private-value" } },
+  ]) assert.throws(() => parsePolicy(data), { message: "Invalid routing policy structure" });
 });
 
 const invalid = [

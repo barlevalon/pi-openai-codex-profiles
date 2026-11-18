@@ -42,7 +42,7 @@ export default function (pi) {
 				const stream = ctx.modelRegistry.getProvider("profile-review").streamSimple({ ...ctx.model, id: "stale-review-id" }, { messages: [] }, { apiKey: "fake", fetch: () => assert.fail("stale review reached physical transport") });
 				const result = await stream.result();
 				assert.equal(result.stopReason, "error");
-				assert.match(result.errorMessage, /not configured/);
+				assert.match(result.errorMessage, /unavailable/);
 			}
 			if (scenario.select) {
 				await pi.setModel(ctx.modelRegistry.find(scenario.select, "gpt-5.6-luna"));
