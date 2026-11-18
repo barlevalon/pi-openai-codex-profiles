@@ -278,6 +278,11 @@ async function directSource(ctx: ExtensionContext) {
 		assert.equal(invalid.stopReason, "error", "rejected native input returns a terminal stream");
 	}
 	assert.equal(calls, 4);
+	let current: ExtensionContext | undefined = ctx;
+	const detached: typeof codex = { ...codex, streamSimple(model) { current = undefined; return complete(model); } };
+	const routing = routingFixture(detached, copilot, () => current, createQuotaLedger(join(getAgentDir(), "personal-detached"), assert.fail), assert.fail, policy);
+	const result = await routing.personal.streamSimple(source, normalizeContext({ messages: [] }), options).result();
+	assert.equal(result.stopReason, "stop", "personal streams do not require a bound work repository after request start");
 }
 
 async function attemptTransition(ctx: ExtensionContext) {

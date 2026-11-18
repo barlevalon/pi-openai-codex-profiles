@@ -65,8 +65,9 @@ export function createNativeRouting(
 	}
 	function requestGuard(account: ProviderAccount, repository = scope(), cwd = current()?.cwd) {
 		requireAccount(account, repository);
+		const restricted = accountOwner(policy, account)?.name === "work";
 		return () => {
-			if (current()?.cwd !== cwd) throw new Error("Repository changed during the request");
+			if (restricted && current()?.cwd !== cwd) throw new Error("Repository changed during the request");
 		};
 	}
 	function physical(target: ModelTarget): Model<Api> {

@@ -78,7 +78,7 @@ for (const [name, origins, expected] of [
   assert.equal(repoScope(checkout, { githubOwners: [], roots: [directory] }), "eligible", "roots remain an independent authorization path");
 });
 
-test("roots are explicit, independent and canonicalized again for every guard", t => {
+test("roots are explicit, independent and canonicalized for each repository lookup", t => {
   const directory = fixture(t);
   const first = join(directory, "first");
   const second = join(directory, "second");

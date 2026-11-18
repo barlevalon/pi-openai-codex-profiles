@@ -72,7 +72,7 @@ The nearest actual Git repository owns the decision. A root container itself, a 
 
 Routing uses Pi's current `ctx.cwd`, not a shell tool's working directory or an ambient startup directory. Eligible repositories use the configured Codex order. Other, unknown, and nonrepository locations use personal Codex only. Copilot is unavailable there, including for reviews. Work requires a bound Pi context. A matching direct personal Codex source can be reused without a context or registry lookup.
 
-Session start, model selection, and session-tree changes bind the context and await native offline availability refresh. Cached availability remains provisional. Each stream resolves repository membership once. Fetch and callback boundaries only check that the bound context still has the same `cwd`; they do not rerun Git discovery. A changed `cwd` stops the stream. Native authentication and availability check membership independently. Known cooldowns remove eligible routed targets. If all targets are cooling down, the request fails before authentication.
+Session start, model selection, and session-tree changes bind the context and await native offline availability refresh. Cached availability remains provisional. Each stream resolves repository membership once. Work-account fetch and callback boundaries only check that the bound context still has the same `cwd`; they do not rerun Git discovery. A changed `cwd` stops work-account streams, not personal Codex streams. Native authentication and availability check membership independently. Known cooldowns remove eligible routed targets. If all targets are cooling down, the request fails before authentication.
 
 ## Use native account logins
 
@@ -86,7 +86,7 @@ Login remains native account management and is not restricted by repository scop
 
 Selecting either alias normalizes the session to `codex-policy/<requested-model-id>` before authentication. Every native Codex chat ID is available. The selected model ID and thinking level stay unchanged. Assistant messages record the physical account that answered.
 
-Work auth and sends require current membership and an eligible repository. Direct work streams outside that scope fail, including raw calls, stale model objects, forged provider labels, and explicit credentials. Missing or broken target authentication is a setup error, not quota exhaustion.
+Work authentication checks current repository membership. Work streams require an eligible repository at request start and an unchanged `cwd`. Direct work streams outside that scope fail, including raw calls, stale model objects, forged provider labels, and explicit credentials. Missing or broken target authentication is a setup error, not quota exhaustion.
 
 Ownership authorizes OAuth refresh at its start. Once a refresh starts, the rotated result returns to native Pi for atomic persistence, even if scope or caller cancellation changes. Auth conversion and subsequent use remain guarded. This package does not persist credentials.
 

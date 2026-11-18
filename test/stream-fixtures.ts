@@ -91,7 +91,7 @@ export async function streamFixtures(ctx) {
 		if (mode === "provider-abort") assert.equal(result.stopReason, "aborted");
 		if (mode.startsWith("scope-")) {
 			assert.equal(result.stopReason, "error", mode);
-			assert.equal(sends, 0, "scope is rechecked after asynchronous caller hooks and fetch");
+			assert.equal(sends, 0, "a changed cwd denies work after asynchronous caller hooks and fetch");
 			assert.equal(networkSends, mode === "scope-fetch" ? 1 : 0, "send entry requires current authorization");
 		}
 	}

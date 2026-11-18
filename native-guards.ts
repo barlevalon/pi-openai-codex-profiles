@@ -36,12 +36,7 @@ export function guardedAuth(auth: ProviderAuth, allowed: () => boolean, guard: (
 				}
 				return allowed() ? result : undefined;
 			},
-			async resolve(input) {
-				guard();
-				const result = await apiKey.resolve(input);
-				guard();
-				return result;
-			},
+			resolve: guardCallback(guard, apiKey.resolve.bind(apiKey)),
 		} } : {}),
 		...(oauth ? { oauth: {
 			...oauth,
@@ -50,12 +45,7 @@ export function guardedAuth(auth: ProviderAuth, allowed: () => boolean, guard: (
 				// Native auth must persist a rotated token even if scope changes during refresh.
 				return oauth.refresh(credential, signal);
 			},
-			async toAuth(credential) {
-				guard();
-				const result = await oauth.toAuth(credential);
-				guard();
-				return result;
-			},
+			toAuth: guardCallback(guard, oauth.toAuth.bind(oauth)),
 		} } : {}),
 	};
 }
