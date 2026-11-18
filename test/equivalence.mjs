@@ -71,7 +71,7 @@ async function run(checkout, scenario) {
   git("remote", "add", "origin", `git@github.com:${scenario.eligible ? "example-org" : "personal"}/fixture.git`);
   const fixture = (name, value) => writeFileSync(join(dir, name), typeof value === "string" ? value : JSON.stringify(value));
   if (scenario.policy !== "missing") fixture("codex-routing-policy.json", scenario.policy === "malformed" ? "{" : {
-    version: 1, ...(checkout === candidate ? { copilotProfile: "personal" } : {}), accountOrder: scenario.order ?? ["work", "personal"], work: { githubOwners: ["example-org"] },
+    version: 1, copilotProfile: "personal", accountOrder: scenario.order ?? ["work", "personal"], work: { githubOwners: ["example-org"] },
     review: { copilotModel: scenario.reviewId ?? reviewId, codexFallbackModel: codexId },
   });
   fixture("auth.json", Object.fromEntries([
@@ -172,27 +172,6 @@ function contract(scenario, trace) {
   }
 }
 
-function comparisonTrace(scenario, trace) {
-  const migrated = structuredClone(trace);
-  if (scenario.name === "work selection outside scope and direct guards") {
-    const current = "openai-codex:work is restricted to its configured eligible profile repositories";
-    const previous = "Work Codex is restricted to configured eligible repositories";
-    assert.equal(migrated.guards.result.errorMessage, current);
-    assert.equal(migrated.guards.auth.error, current);
-    migrated.guards.result.errorMessage = previous;
-    migrated.guards.auth.error = previous;
-  }
-  if (["review runtime capability mismatch", "cooling review target still validates capabilities"].includes(scenario.name)) {
-    const previous = "Configured review targets have incompatible capabilities";
-    const current = `API key auth failed for provider profile-review: ${previous}`;
-    assert.equal(migrated.result.errorMessage, current);
-    assert.equal(migrated.events[0].error.errorMessage, current);
-    migrated.result.errorMessage = previous;
-    migrated.events[0].error.errorMessage = previous;
-  }
-  return migrated;
-}
-
 let failed = 0;
 let exact = 0;
 for (const scenario of scenarios) {
@@ -205,8 +184,6 @@ for (const scenario of scenarios) {
     if (isDeepStrictEqual(left, right)) {
       exact++;
       console.log(`PASS ${scenario.name}`);
-    } else if (isDeepStrictEqual(left, comparisonTrace(scenario, right))) {
-      console.log(`MIGRATED diagnostics ${scenario.name}`);
     } else {
       failed++;
       console.error(`DIFFERING TRACE ${scenario.name}\nBASELINE\n${JSON.stringify(left, null, 2)}\nCANDIDATE\n${JSON.stringify(right, null, 2)}`);

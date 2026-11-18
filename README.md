@@ -127,7 +127,9 @@ This extension is an account-routing policy, not a sandbox. `--no-extensions` by
 
 ## Test
 
-Run `npm test` with Node.js 22.19 or later and Pi 1.5.2 on PATH. The independent scope suite also needs resolvable SDK packages. Set `PROFILE_SCOPE_SDK` to a directory containing `node_modules/@earendil-works` when the SDK is not installed beside this checkout. Tests install the package into temporary profiles, create real Git fixtures, and merge cooldown observations across independent processes.
+For development, run `npm ci --ignore-scripts`, then `npm test` with Node.js 22.19 or later and Pi 1.5.2 on PATH. The test command checks production types and positive and negative type fixtures before running the offline runtime suites. Development dependencies pin the tested SDK and compiler. Pi supplies runtime modules, including TypeBox, so normal extension installation needs no separate npm setup.
+
+The independent scope suite uses the installed development SDK. Set `PROFILE_SCOPE_SDK` to another directory containing `node_modules/@earendil-works` to test an explicit SDK 1.5.2 installation. Tests install the package into temporary profiles, create real Git fixtures, and merge cooldown observations across independent processes.
 
 Host tests use fake credentials, temporary `PI_CODING_AGENT_DIR` profiles, `--offline --no-mcp --no-context-files`, local response fixtures, and a loopback HTTP server. They cover defaults, strict parsing, policy isolation and reloads, scope guards, both account priorities, independent budgets, review capabilities, auth isolation, stream commitment, prompt-level notices, and native compaction. No saved credentials or upstream model requests are used.
 
@@ -135,4 +137,13 @@ Set `PI_PACKAGE_TEST_SOURCE` to a Git source to check an installed revision inst
 
 ## Implementation reference
 
-`policy.ts` normalizes copied, frozen profile membership. `targets.ts` correlates native credentials and budgets and performs pure eligibility and candidate selection. `scope.ts` inspects Git provenance. `native-guards.ts` preserves native auth, availability, and direct-operation contracts. `routing.ts` captures ingress identity and owns routed attempts through one progress union. `stream-evidence.ts` inspects output commitment. `quota-protocol.ts` decodes bounded wire evidence into observations with private payloads. `quota.ts` retains local and shared storage provenance and immutable max-merge files.
+- `policy.ts` checks raw policy structure with a private TypeBox schema, then constructs copied, frozen profile membership.
+- `identifiers.ts` shares explicit ASCII, GitHub owner, and unpadded-text rules. Configured review IDs retain their stricter grammar in `policy.ts`.
+- `targets.ts` correlates native credentials and budgets and performs pure eligibility and candidate selection.
+- `scope.ts` reads exact Git origin records and verifies checkout provenance.
+- `native-guards.ts` preserves native auth, availability, and direct-operation contracts.
+- `routing.ts` returns the validated review candidates before budget selection. Each routed attempt owns one progress union, and received evidence precedes caller hooks.
+- `review.ts` derives shared capabilities and tracks prompt-level Codex contribution using native stop reasons.
+- `stream-evidence.ts` recognizes raw and normalized output commitment.
+- `quota-protocol.ts` inspects cloned responses through byte-bounded Web Streams and decodes direct quota observations with private payloads.
+- `quota.ts` reads complete bounded records and preserves local and shared provenance through immutable max-merge files.
