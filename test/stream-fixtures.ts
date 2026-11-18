@@ -2,16 +2,17 @@ import assert from "node:assert/strict";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import { quotaStore } from "../quota.ts";
-import { routing } from "../routing.ts";
+import { createQuotaLedger } from "../quota.ts";
+import { createNativeRouting } from "../routing.ts";
 import { loadPolicy } from "../policy.ts";
 
 export async function streamFixtures(ctx) {
 	const native = builtinProviders().find(provider => provider.id === "openai-codex")!;
 	const source = ctx.modelRegistry.find("openai-codex:work", "gpt-5.6-luna");
-	for (const mode of ["mutation", "usage", "raw-content", "hook-mutation", "provider-abort", "malformed", "scope-change", "unbound"]) {
+	for (const mode of ["mutation", "usage", "raw-content", "hook-mutation", "provider-abort", "malformed", "scope-change", "scope-response", "scope-event", "scope-fetch", "scope-fetch-entry", "unbound"]) {
 		let current = ctx;
 		let sends = 0;
+		let networkSends = 0;
 		const calls = [];
 		const raw = {
 			...native,
@@ -24,6 +25,10 @@ export async function streamFixtures(ctx) {
 						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 					};
 					await options.onPayload?.({}, model);
+					if (mode === "scope-response") await options.onResponse?.({ status: 200, headers: {} }, model);
+					if (mode === "scope-event") await options.onProviderStreamEvent?.({ type: "error", error: { code: "usage_limit_reached" } }, model);
+					if (mode === "scope-fetch-entry") current = { ...ctx, cwd: getAgentDir() };
+					if (mode === "scope-fetch" || mode === "scope-fetch-entry") await options.fetch("http://127.0.0.1:1/fixture", {});
 					sends++;
 					yield { type: "start", partial: message };
 					if (mode === "mutation" || mode === "malformed") {
@@ -45,16 +50,29 @@ export async function streamFixtures(ctx) {
 				})();
 			},
 		};
-		const router = routing(raw, raw, () => current, quotaStore(join(getAgentDir(), `stream-${mode}`), assert.fail), assert.fail, loadPolicy(getAgentDir(), assert.fail));
+		const routing = createNativeRouting(raw, raw, () => current, createQuotaLedger(join(getAgentDir(), `stream-${mode}`), assert.fail), assert.fail, loadPolicy(getAgentDir(), assert.fail));
 		if (mode === "unbound") {
 			current = undefined;
-			assert.throws(() => router.guardWork(), /restricted/);
+			const result = await routing.accountProvider("work").streamSimple({ ...source, provider: "openai-codex:personal" }, { messages: [] }, { apiKey: "fake" }).result();
+			assert.equal(result.stopReason, "error");
+			assert.match(result.errorMessage, /restricted/);
 			continue;
 		}
-		const stream = router.stream(source, { messages: [] }, {
+		const stream = routing.accountProvider("work").streamSimple(source, { messages: [] }, {
 			apiKey: "fake", transport: "auto", reasoning: "high",
 			onPayload() { if (mode === "scope-change") current = { ...ctx, cwd: getAgentDir() }; },
-			onProviderStreamEvent(event) { if (mode === "hook-mutation") event.error.code = "usage_limit_reached"; },
+			async onResponse() { await Promise.resolve(); if (mode === "scope-response") current = { ...ctx, cwd: getAgentDir() }; },
+			async onProviderStreamEvent(event) {
+				await Promise.resolve();
+				if (mode === "hook-mutation") event.error.code = "usage_limit_reached";
+				if (mode === "scope-event") current = { ...ctx, cwd: getAgentDir() };
+			},
+			async fetch() {
+				networkSends++;
+				await Promise.resolve();
+				if (mode === "scope-fetch") current = { ...ctx, cwd: getAgentDir() };
+				return new Response(JSON.stringify({ error: { code: "usage_limit_reached" } }), { status: 429 });
+			},
 		});
 		const events = [];
 		for await (const event of stream) events.push(event);
@@ -70,6 +88,10 @@ export async function streamFixtures(ctx) {
 		}
 		if (mode === "usage") assert.equal(result.usage.input, 2);
 		if (mode === "provider-abort") assert.equal(result.stopReason, "aborted");
-		if (mode === "scope-change") assert.equal(sends, 0, "scope is rechecked after asynchronous caller hooks");
+		if (mode.startsWith("scope-")) {
+			assert.equal(result.stopReason, "error", mode);
+			assert.equal(sends, 0, "scope is rechecked after asynchronous caller hooks and fetch");
+			assert.equal(networkSends, mode === "scope-fetch" ? 1 : 0, "send entry requires current authorization");
+		}
 	}
 }

@@ -94,6 +94,7 @@ export default function (pi) {
 				const complete = { type: "response.completed", response: { id: "fixture", status: "completed", output: [], usage: { input_tokens: 2, output_tokens: 0, total_tokens: 2 } } };
 				const options = {
 					transport: "sse", reasoning: scenario.thinking ?? "high", signal: controller.signal, maxRetries: scenario.retries ?? 0,
+					...(scenario.raw ? { reasoningEffort: scenario.thinking ?? "high", textVerbosity: "high", toolChoice: "required" } : {}),
 					headers: { "source-only": "must-not-cross" },
 					onPayload(payload, model) { payloads.push({ payload, provider: model.provider }); },
 					onResponse(response, model) {
@@ -109,7 +110,7 @@ export default function (pi) {
 						const headers = Object.fromEntries(new Headers(init.headers));
 						requests.push({ url: String(input), headers });
 						const work = headers["chatgpt-account-id"] === "work";
-						if (scenario.personalQuota && headers["chatgpt-account-id"] === "personal") return sse([quota]);
+						if (scenario.personalQuota && headers["chatgpt-account-id"] === "personal") return scenario.mode === "http" ? new Response(JSON.stringify(quota), { status: 429 }) : sse([quota]);
 						if (scenario.reviewError && headers["chatgpt-account-id"] === "personal") return new Response("fixture failure", { status: 500 });
 						const copilot = String(input).includes("/copilot/");
 						if (copilot) {
@@ -153,7 +154,8 @@ export default function (pi) {
 					assert.equal(result.stopReason, "error");
 					assert.match(result.errorMessage, /streamSimple/);
 				}
-				const stream = ctx.modelRegistry.streamSimple(model, { messages: [{ role: "user", content: "fixture", timestamp: Date.now() }] }, options);
+				const transcript = { messages: [{ role: "user", content: "fixture", timestamp: Date.now() }] };
+				const stream = scenario.raw ? ctx.modelRegistry.stream(model, transcript, options) : ctx.modelRegistry.streamSimple(model, transcript, options);
 				const events = [];
 				for await (const event of stream) events.push(structuredClone(event));
 				const result = await stream.result();
@@ -165,7 +167,10 @@ export default function (pi) {
 				assert.equal(result.stopReason, scenario.stop ?? "stop", result.errorMessage);
 				assert.equal(payloads.length, requests.length);
 				assert.equal(responses.length, requests.length - (scenario.expected.includes("copilot") && scenario.mode !== "copilot-ok" ? 1 : 0));
-				for (const payload of payloads.filter(item => item.provider.startsWith("openai-codex:"))) assert.equal(payload.payload.reasoning.effort, scenario.wireThinking ?? scenario.thinking ?? "high");
+				for (const payload of payloads.filter(item => item.provider.startsWith("openai-codex:"))) {
+					assert.equal(payload.payload.reasoning.effort, scenario.wireThinking ?? scenario.thinking ?? "high");
+					if (scenario.raw) { assert.equal(payload.payload.text.verbosity, "high"); assert.equal(payload.payload.tool_choice, "required"); }
+				}
 				for (const request of requests) {
 					assert.equal(request.headers["source-only"], scenario.direct === "github-copilot" ? "must-not-cross" : undefined, "account switches discard source auth headers");
 					assert.equal(request.headers["account-config"], request.headers["chatgpt-account-id"] ?? "copilot");

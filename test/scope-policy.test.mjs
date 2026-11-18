@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { repoScope } from "../scope.ts";
-import { quotaStore, quotaUntil } from "../quota.ts";
+import { createQuotaLedger, quotaUntil } from "../quota.ts";
+import { codexModelId, copilotModelId } from "../targets.ts";
+import { nativeProbe } from "./native-probe.mjs";
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), "scope-policy-"));
@@ -56,31 +58,23 @@ test("roots are explicit, independent and canonicalized again for every guard", 
 test("personal and work quota classifiers share evidence but not budgets", t => {
   const directory = fixture(t);
   const until = Date.now() + 600000;
-  for (const key of ["personal-codex", "work-codex"]) {
-    assert.equal(quotaUntil(key, { error: { code: "usage_limit_reached", resets_at: until / 1000 } }), until);
-    assert.equal(quotaUntil(key, { response: { error: { type: "usage_limit_reached", resets_at: until / 1000 } } }), until);
-    assert.equal(quotaUntil(key, { error: { code: "rate_limit_exceeded" } }, 429), undefined);
-  }
-  const store = quotaStore(directory, assert.fail);
-  store.observe("personal-codex", until);
-  assert.equal(store.until("personal-codex"), until);
-  assert.equal(store.until("work-codex"), 0);
-  assert.equal(store.until("copilot-review"), 0);
-  store.observe("work-codex", until + 60000);
-  assert.equal(store.until("personal-codex"), until);
-  assert.equal(store.until("work-codex"), until + 60000);
+  assert.equal(quotaUntil("codex", { error: { code: "usage_limit_reached", resets_at: until / 1000 } }), until);
+  assert.equal(quotaUntil("codex", { response: { error: { type: "usage_limit_reached", resets_at: until / 1000 } } }), until);
+  assert.equal(quotaUntil("codex", { error: { code: "rate_limit_exceeded" } }, 429), undefined);
+  const personal = { service: "codex", account: "personal", model: codexModelId("fixture") };
+  const work = { ...personal, account: "work" };
+  const review = { service: "copilot-review", model: copilotModelId("fixture") };
+  const ledger = createQuotaLedger(directory, assert.fail);
+  const snapshot = () => ledger.snapshot([personal, work, review], Date.now());
+  writeFileSync(join(directory, "personal-codex.fixture.json"), JSON.stringify({ version: 1, key: "personal-codex", until }));
+  assert.deepEqual(snapshot(), { personal: { kind: "cooling", until }, work: { kind: "available" }, review: { kind: "available" } });
+  writeFileSync(join(directory, "work-codex.fixture.json"), JSON.stringify({ version: 1, key: "work-codex", until: until + 60000 }));
+  assert.deepEqual(snapshot().personal, { kind: "cooling", until });
+  assert.deepEqual(snapshot().work, { kind: "cooling", until: until + 60000 });
   writeFileSync(join(directory, "personal-codex.bad.json"), "{}");
-  assert.throws(() => store.until("personal-codex"), /Cannot read personal/);
+  assert.equal(snapshot().personal.kind, "unreadable");
 });
 
-test("corrupt Copilot state requires an actual in-process observation, not cached disk state", t => {
-  const directory = fixture(t);
-  const until = Date.now() + 600000;
-  quotaStore(directory, assert.fail).observe("copilot-review", until);
-  const reader = quotaStore(directory, assert.fail);
-  assert.equal(reader.until("copilot-review"), until);
-  writeFileSync(join(directory, "copilot-review.bad.json"), "{}");
-  assert.throws(() => reader.until("copilot-review"), /Cannot read Copilot/);
-  reader.observe("copilot-review", until + 60000);
-  assert.equal(reader.until("copilot-review"), until + 60000);
+test("corrupt Copilot state requires an actual in-process observation, not cached disk state", { timeout: 30000 }, async t => {
+  await nativeProbe("quota-corruption", fixture(t));
 });

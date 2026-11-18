@@ -5,7 +5,16 @@ import { syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { loadPolicy, parsePolicy } from "../policy.ts";
+import { loadPolicy as readPolicy, parsePolicy } from "../policy.ts";
+
+function policyData(policy) {
+  return {
+    version: policy.version, accountOrder: policy.accountOrder,
+    ...(policy.work ? { work: policy.work } : {}),
+    ...(policy.review.kind === "ready" ? { review: { copilotModel: policy.review.binding.primary, codexFallbackModel: policy.review.binding.fallback } } : {}),
+  };
+}
+const loadPolicy = (directory, notice) => policyData(readPolicy(directory, notice));
 
 const full = () => ({ version: 1, accountOrder: ["work", "personal"], work: { githubOwners: ["example-org"], roots: ["~/projects/workspaces"] }, review: { copilotModel: "claude-sonnet-5.5", codexFallbackModel: "gpt-5.6-luna" } });
 const safe = { version: 1, accountOrder: ["personal"] };
@@ -27,7 +36,7 @@ test("policy validates both priorities, resolves only leading home roots and fre
     const policy = parsePolicy(data);
     assert.deepEqual(policy.accountOrder, order);
     assert.deepEqual(policy.work.roots, [join(homedir(), "projects/workspaces")]);
-    for (const value of [policy, policy.accountOrder, policy.work, policy.work.roots, policy.work.githubOwners, policy.review]) assert.ok(Object.isFrozen(value));
+    for (const value of [policy, policy.accountOrder, policy.work, policy.work.roots, policy.work.githubOwners, policy.review, policy.review.binding]) assert.ok(Object.isFrozen(value));
     data.accountOrder.push("work");
     data.work.githubOwners[0] = "changed";
     assert.deepEqual(policy.work.githubOwners, ["example-org"]);
@@ -102,7 +111,7 @@ test("short policy reads continue to EOF without accepting a valid prefix", t =>
   try {
     const body = JSON.stringify(full());
     writeFileSync(file, body);
-    assert.deepEqual(loadPolicy(directory, assert.fail), parsePolicy(full()));
+    assert.deepEqual(loadPolicy(directory, assert.fail), policyData(parsePolicy(full())));
     chunkSize = Buffer.byteLength(body);
     writeFileSync(file, body + " invalid trailing content");
     const notices = [];

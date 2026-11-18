@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { quotaStore } from "../quota.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const token = account => `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: account } })).toString("base64")}.fake`;
@@ -39,7 +38,10 @@ async function host(scenario, check) {
       "github-copilot": { baseUrl: scenario.baseUrl ? `${scenario.baseUrl}/copilot` : "http://127.0.0.1:1/copilot", headers: { "account-config": "copilot" }, ...(scenario.mismatch ? { modelOverrides: { "claude-sonnet-5.5": { inputLimits: { images: { resize: { maxWidth: 1234 } } } } } } : {}) },
     } }));
   }
-  for (const key of scenario.cool ?? []) quotaStore(join(dir, "codex-routing"), assert.fail).observe(key, Date.now() + 600000);
+  for (const key of scenario.cool ?? []) {
+    mkdirSync(join(dir, "codex-routing"), { recursive: true });
+    writeFileSync(join(dir, "codex-routing", `${key}.fixture.json`), JSON.stringify({ version: 1, key, until: Date.now() + 600000 }));
+  }
   if (scenario.badState) {
     mkdirSync(join(dir, "codex-routing"));
     writeFileSync(join(dir, "codex-routing", `${scenario.badState}.bad.json`), "{}");
@@ -120,6 +122,7 @@ const cases = [
   { name: "same-family review quota uses a factual fallback notice", review: true, reviewId: "gpt-5.6-luna", expected: ["copilot", "personal"], answer: "openai-codex:personal" },
   { name: "stale direct review selection is rejected", review: true, staleReview: true, mode: "copilot-ok", expected: ["copilot"], answer: "github-copilot" },
   { name: "all review targets cooling fails before auth", review: true, cool: ["copilot-review", "personal-codex"], expected: [], answer: "profile-review", stop: "error" },
+  { name: "last Copilot HTTP quota cancellation is error not caller abort", review: true, order: ["personal"], cool: ["personal-codex"], retries: 3, expected: ["copilot"], answer: "github-copilot", stop: "error" },
   { name: "unreadable work state avoids work refresh and uses personal", eligible: true, expired: true, badState: "work-codex", expected: ["personal"], answer: "openai-codex:personal" },
   { name: "malformed Copilot state cannot authorize substitution", review: true, badState: "copilot-review", expected: [], answer: "profile-review", stop: "error" },
   { name: "personal alias uses work first", eligible: true, mode: "success", expected: ["work"], answer: "openai-codex:work" },
@@ -134,6 +137,12 @@ const cases = [
   { name: "structured HTTP quota falls back with host retries disabled", eligible: true, mode: "http", expected: ["work", "personal"], answer: "openai-codex:personal" },
   { name: "known HTTP quota stops explicit native retries", eligible: true, mode: "http", retries: 3, expected: ["work", "personal"], answer: "openai-codex:personal" },
   { name: "known SSE quota stops explicit native retries", eligible: true, mode: "quota", retries: 3, expected: ["work", "personal"], answer: "openai-codex:personal" },
+  { name: "last personal SSE quota cancellation is error not caller abort", order: ["personal"], personalQuota: true, retries: 3, expected: ["personal"], answer: "openai-codex:personal", stop: "error" },
+  { name: "last personal HTTP quota cancellation is error not caller abort", order: ["personal"], personalQuota: true, mode: "http", retries: 3, expected: ["personal"], answer: "openai-codex:personal", stop: "error" },
+  { name: "last available work quota cancellation is error", eligible: true, mode: "quota", cool: ["personal-codex"], retries: 3, expected: ["work"], answer: "openai-codex:work", stop: "error" },
+  { name: "quota cancellation on every finite target ends as error", eligible: true, mode: "quota", personalQuota: true, retries: 3, expected: ["work", "personal"], answer: "openai-codex:personal", stop: "error" },
+  { name: "caller cancellation wins simultaneous native quota cancellation", eligible: true, mode: "abort", retries: 3, expected: ["work"], answer: "openai-codex:work", stop: "aborted" },
+  { name: "raw Codex preserves native options through quota fallback", eligible: true, direct: "openai-codex:personal", raw: true, mode: "quota", expected: ["work", "personal"], answer: "openai-codex:personal" },
   { name: "empty zero-usage success is not a quota failure", eligible: true, mode: "empty", expected: ["work"], answer: "openai-codex:work" },
   { name: "raw usage before failure prevents replay", eligible: true, mode: "raw-usage", expected: ["work"], answer: "openai-codex:work", stop: "error" },
   { name: "thinking before failure prevents replay", eligible: true, mode: "thinking", expected: ["work"], answer: "openai-codex:work", stop: "error" },
@@ -158,6 +167,9 @@ const cases = [
 for (const scenario of cases) test(`host Pi ${scenario.name}`, { timeout: 30000 }, () => host(scenario));
 
 for (const reviewTarget of ["personal", "work"]) {
+  test(`host Pi cooling ${reviewTarget} target still validates review capabilities before auth`, { timeout: 30000 }, () => host({
+    eligible: true, review: true, reviewTarget, capabilities: { contextWindow: 1024 }, capabilityCheck: true, cool: [`${reviewTarget}-codex`],
+  }));
   for (const [capability, capabilities] of Object.entries({
     contextWindow: { contextWindow: 1024 },
     maxTokens: { maxTokens: 16 },

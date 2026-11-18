@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
-import { once } from "node:events";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { repoScope as resolveScope } from "../scope.ts";
 const repoScope = (cwd, root) => resolveScope(cwd, { githubOwners: ["example-org"], roots: [root] });
-import { quotaResponse, quotaStore, quotaUntil, RETRY_COOLDOWN_MS } from "../quota.ts";
+import { createQuotaLedger, quotaResponse, quotaUntil, RETRY_COOLDOWN_MS } from "../quota.ts";
+import { codexModelId, copilotModelId } from "../targets.ts";
+import { nativeProbe } from "./native-probe.mjs";
 
 function git(path, ...args) {
   return execFileSync("git", ["-C", path, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
@@ -85,19 +86,19 @@ test("quota body inspection respects cancellation and its read deadline", { time
   t.after(() => clearTimeout(keepAlive));
   for (const signal of [AbortSignal.timeout(20), undefined]) {
     const response = new Response(new ReadableStream(), { status: 429 });
-    assert.equal(await quotaResponse("work-codex", response, signal), undefined);
+    assert.equal(await quotaResponse("codex", response, signal), undefined);
     void response.body.cancel();
   }
   const oversized = new Response("x".repeat(17000), { status: 429 });
-  assert.equal(await quotaResponse("work-codex", oversized), undefined);
+  assert.equal(await quotaResponse("codex", oversized), undefined);
 });
 
 test("quota requires structured provider evidence and parses only known reset forms", () => {
   const now = Date.now();
-  assert.equal(quotaUntil("work-codex", { error: { code: "usage_limit_reached", resets_at: (now + 60000) / 1000 } }, 429, null, now), now + 60000);
-  assert.equal(quotaUntil("work-codex", { response: { error: { type: "usage_limit_reached" } } }, undefined, null, now), now + RETRY_COOLDOWN_MS);
+  assert.equal(quotaUntil("codex", { error: { code: "usage_limit_reached", resets_at: (now + 60000) / 1000 } }, 429, null, now), now + 60000);
+  assert.equal(quotaUntil("codex", { response: { error: { type: "usage_limit_reached" } } }, undefined, null, now), now + RETRY_COOLDOWN_MS);
   for (const code of ["rate_limit_exceeded", "usage_not_included", "insufficient_quota", "overloaded"]) {
-    for (const status of [401, 403, 429, 503]) assert.equal(quotaUntil("work-codex", { error: { code, message: "quota exhausted" } }, status, "60", now), undefined);
+    for (const status of [401, 403, 429, 503]) assert.equal(quotaUntil("codex", { error: { code, message: "quota exhausted" } }, status, "60", now), undefined);
   }
   // https://github.com/earendil-works/pi/issues/3643
   // https://github.com/orgs/community/discussions/197813
@@ -108,31 +109,28 @@ test("quota requires structured provider evidence and parses only known reset fo
   for (const status of [401, 403, 429, 503]) assert.equal(quotaUntil("copilot-review", copilot, status, null, now), undefined);
 });
 
-test("independent processes merge immutable observations by maximum reset", async () => {
+test("independent processes merge immutable observations by maximum reset", { timeout: 30000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "routing-quota-"));
   try {
     const path = join(dir, "state");
     const untils = [Date.now() + 120000, Date.now() + 300000, Date.now() + 60000];
-    const script = `import { quotaStore } from ${JSON.stringify(new URL("../quota.ts", import.meta.url).href)}; quotaStore(process.argv[1], console.error).observe('work-codex', Number(process.argv[2]));`;
-    const children = untils.map(until => spawn(process.execPath, ["--input-type=module", "-e", script, path, String(until)]));
-    assert.deepEqual(await Promise.all(children.map(child => once(child, "exit"))), [[0, null], [0, null], [0, null]]);
-    assert.equal(quotaStore(path, assert.fail).until("work-codex"), Math.max(...untils));
+    await Promise.all(untils.map((until, index) => {
+      const profile = join(dir, `profile-${index}`);
+      mkdirSync(profile);
+      return nativeProbe("quota-worker", profile, profile, { DOMAIN_QUOTA_DIRECTORY: path, DOMAIN_QUOTA_UNTIL: String(until) });
+    }));
+    const work = { service: "codex", account: "work", model: codexModelId("fixture") };
+    const review = { service: "copilot-review", model: copilotModelId("fixture") };
+    assert.deepEqual(createQuotaLedger(path, assert.fail).snapshot([work], Date.now()).work, { kind: "cooling", until: Math.max(...untils) });
     assert.equal(statSync(path).mode & 0o777, 0o700);
     for (const file of readdirSync(path)) {
       assert.equal(statSync(join(path, file)).mode & 0o777, 0o600);
       assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(path, file), "utf8"))).sort(), ["key", "until", "version"]);
     }
     writeFileSync(join(path, "work-codex.bad.json"), "{}");
-    assert.equal(quotaStore(path, assert.fail).until("work-codex"), Infinity);
-    assert.equal(quotaStore(path, assert.fail).until("copilot-review"), 0);
+    assert.equal(createQuotaLedger(path, assert.fail).snapshot([work], Date.now()).work.kind, "unreadable");
+    assert.equal(createQuotaLedger(path, assert.fail).snapshot([review], Date.now()).review.kind, "available");
     writeFileSync(join(path, "copilot-review.bad.json"), "{}");
-    assert.throws(() => quotaStore(path, assert.fail).until("copilot-review"), /Cannot read/);
-    const blocked = join(dir, "blocked");
-    writeFileSync(blocked, "not a directory");
-    const warnings = [];
-    const local = quotaStore(blocked, message => warnings.push(message));
-    local.observe("copilot-review", Math.max(...untils));
-    assert.equal(warnings.length, 1);
-    assert.equal(local.until("copilot-review"), Math.max(...untils), "failed persistence retains local quota evidence");
+    assert.equal(createQuotaLedger(path, assert.fail).snapshot([review], Date.now()).review.kind, "unreadable");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
