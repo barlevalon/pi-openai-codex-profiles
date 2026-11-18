@@ -8,14 +8,13 @@ export interface QuotaLedger {
 	observeDirect(observation: DirectObservation): void;
 	snapshot(candidates: readonly ModelTarget[], nowMs: number): ReadonlyMap<Budget, BudgetState>;
 }
-const MAX_TIMESTAMP_MS = 8.64e15;
 
 function storedDeadline(value: unknown, key: Budget): number {
 	if (!value || typeof value !== "object") throw new Error("Invalid quota observation");
 	if (!("version" in value) || value.version !== 1) throw new Error("Invalid quota observation version");
 	if (!("key" in value) || value.key !== key) throw new Error("Invalid quota observation key");
 	if (!("until" in value) || typeof value.until !== "number") throw new Error("Invalid quota observation deadline");
-	if (!Number.isFinite(value.until) || value.until <= 0 || value.until >= MAX_TIMESTAMP_MS) throw new Error("Invalid quota observation deadline");
+	if (value.until <= 0 || Number.isNaN(new Date(value.until).getTime())) throw new Error("Invalid quota observation deadline");
 	return value.until;
 }
 
@@ -39,7 +38,12 @@ export function createQuotaLedger(directory: string, warn: (message: string) => 
 					const stat = fstatSync(fd);
 					if (!stat.isFile() || stat.size > 256) throw new Error("Invalid quota observation size");
 					const body = Buffer.alloc(257);
-					const lengthBytes = readSync(fd, body, 0, body.length, 0);
+					let lengthBytes = 0;
+					while (lengthBytes < body.length) {
+						const count = readSync(fd, body, lengthBytes, body.length - lengthBytes, lengthBytes);
+						if (count === 0) break;
+						lengthBytes += count;
+					}
 					if (lengthBytes > 256) throw new Error("Invalid quota observation size");
 					const value: unknown = JSON.parse(body.toString("utf8", 0, lengthBytes));
 					shared[key] = Math.max(shared[key], storedDeadline(value, key));

@@ -2,7 +2,6 @@ import type { ProviderAccount } from "./targets.ts";
 
 export const RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 const MAX_BODY_BYTES = 16 * 1024;
-const MAX_TIMESTAMP_MS = 8.64e15;
 
 function record(value: unknown): Record<string, unknown> | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return;
@@ -19,7 +18,19 @@ function errorEnvelope(payload: unknown): Record<string, unknown> | undefined {
 }
 
 function futureTimestamp(milliseconds: number, nowMs: number): boolean {
-	return Number.isFinite(milliseconds) && milliseconds > nowMs && milliseconds < MAX_TIMESTAMP_MS;
+	return milliseconds > nowMs && !Number.isNaN(new Date(milliseconds).getTime());
+}
+
+function retryAfterSeconds(value: string): number | undefined {
+	const parts = value.split(".");
+	if (parts.length > 2) return;
+	for (const part of parts) {
+		if (!part) return;
+		for (const character of part) {
+			if (character < "0" || character > "9") return;
+		}
+	}
+	return Number(value);
 }
 
 function quotaDeadline(account: ProviderAccount, payload: unknown, status: number | undefined, retryAfter: string | null | undefined, nowMs: number): number | undefined {
@@ -36,8 +47,8 @@ function quotaDeadline(account: ProviderAccount, payload: unknown, status: numbe
 		}
 	}
 	if (retryAfter) {
-		const numericSeconds = /^\d+(?:\.\d+)?$/.test(retryAfter);
-		const retryMs = numericSeconds ? nowMs + Number(retryAfter) * 1000 : Date.parse(retryAfter);
+		const seconds = retryAfterSeconds(retryAfter);
+		const retryMs = seconds === undefined ? Date.parse(retryAfter) : nowMs + seconds * 1000;
 		if (futureTimestamp(retryMs, nowMs)) return retryMs;
 	}
 	return nowMs + RETRY_COOLDOWN_MS;
@@ -69,37 +80,22 @@ export function decodeQuotaPayload(account: ProviderAccount, payload: unknown, s
 }
 
 async function readBoundedBody(response: Response, signal?: AbortSignal): Promise<unknown> {
-	const reader = response.clone().body?.getReader();
-	if (!reader) return;
+	const body = response.clone().body;
+	if (!body) return;
 	const timeout = AbortSignal.timeout(1000);
 	const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
-	let rejectRead: (reason: unknown) => void = () => {};
-	const cancelled = new Promise<never>((_resolve, reject) => { rejectRead = reject; });
-	const abort = () => rejectRead(deadline.reason);
-	deadline.addEventListener("abort", abort, { once: true });
 	let lengthBytes = 0;
-	const chunks: Uint8Array[] = [];
+	const bounded = new TransformStream<Uint8Array, Uint8Array>({
+		transform(chunk, controller) {
+			lengthBytes += chunk.byteLength;
+			if (lengthBytes > MAX_BODY_BYTES) throw new Error("Quota response exceeds byte limit");
+			controller.enqueue(chunk);
+		},
+	});
 	try {
-		deadline.throwIfAborted();
-		while (true) {
-			const { done, value } = await Promise.race([reader.read(), cancelled]);
-			if (done) break;
-			lengthBytes += value.byteLength;
-			if (lengthBytes > MAX_BODY_BYTES) return;
-			chunks.push(value);
-		}
-		const bytes = new Uint8Array(lengthBytes);
-		let offsetBytes = 0;
-		for (const chunk of chunks) {
-			bytes.set(chunk, offsetBytes);
-			offsetBytes += chunk.byteLength;
-		}
-		return JSON.parse(new TextDecoder().decode(bytes));
+		return await new Response(body.pipeThrough(bounded, { signal: deadline })).json();
 	} catch {
 		return;
-	} finally {
-		deadline.removeEventListener("abort", abort);
-		void reader.cancel().catch(() => {});
 	}
 }
 
