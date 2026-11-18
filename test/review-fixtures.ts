@@ -35,8 +35,16 @@ export async function reviewFixtures(ctx) {
 			const model = ctx.modelRegistry.find(provider, id);
 			return provider === "openai-codex:work" ? { ...model, inputLimits: { maxRequestBytes: 1234 } } : model;
 		} } : current.modelRegistry;
-		const routing = routingFixture(mode === "missing-native" ? { ...codex, getModels: () => [] } : codex, copilot, () => ({ ...current, modelRegistry: registry }), createQuotaLedger(join(getAgentDir(), `review-${mode}`), assert.fail), assert.fail, policy);
-		if (mode === "disabled") { assert.equal(routing.review.getModels().length, 0); continue; }
+		let contextReads = 0;
+		const routing = routingFixture(mode === "missing-native" ? { ...codex, getModels: () => [] } : codex, copilot, () => { contextReads++; return { ...current, modelRegistry: registry }; }, createQuotaLedger(join(getAgentDir(), `review-${mode}`), assert.fail), assert.fail, policy);
+		if (mode === "disabled") {
+			assert.equal(routing.review.getModels().length, 0);
+			assert.deepEqual(routing.review.filterModels([], undefined), []);
+			assert.deepEqual(routing.review.filterAllModels([], undefined), []);
+			assert.equal(await routing.review.auth.apiKey.check({ ctx: {}, signal: new AbortController().signal }), undefined);
+			assert.equal(contextReads, 0, "disabled review availability must not discover repository membership");
+			continue;
+		}
 		if (mode === "missing-native") {
 			assert.ok(routing.unavailableReview);
 			assert.throws(() => routing.unavailableReview.route({}), /unavailable/);

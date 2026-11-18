@@ -111,7 +111,7 @@ export function createNativeRouting(
 		if (!targets) throw new Error("Configured review targets are unavailable or have incompatible capabilities for this profile");
 		return targets;
 	}
-	function reviewAllowed() { return reviewTargets(scope()) !== undefined; }
+	function reviewAllowed() { return !!derivedReview && reviewTargets(scope()) !== undefined; }
 
 	function openStream<A extends Api, O extends StreamOptions>(
 		source: Model<A>,
