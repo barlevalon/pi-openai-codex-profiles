@@ -31,6 +31,8 @@ test("scope has no default selectors and matches exact owners case-insensitively
     "https://github.com/Example-Org/fixture",
     "ssh://git@github.com/Example-Org/fixture.git",
     "git@github.com:Example-Org/fixture.git",
+    "https://github.com/Example-Org/A_9.-repo.git",
+    "https://github.com/Example-Org/fixture.GIT",
   ]) {
     git(checkout, "remote", "set-url", "origin", origin);
     assert.equal(repoScope(checkout, scope), "eligible", origin);
@@ -45,6 +47,13 @@ test("scope has no default selectors and matches exact owners case-insensitively
     "https://github.com/example-org/fixture.git?query=1",
     "https://user@github.com/example-org/fixture.git",
     "ssh://git@github.com:22/example-org/fixture.git",
+    "https://github.com/example-org/",
+    "https://github.com/example-org/.git",
+    "https://github.com/example-org/.",
+    "https://github.com/example-org/..",
+    "https://github.com/example-org/...git",
+    "https://github.com/example-org/two ids",
+    "https://github.com/example-org/模型",
   ]) {
     git(checkout, "remote", "set-url", "origin", origin);
     assert.equal(repoScope(checkout, scope), "other", origin);
@@ -54,6 +63,19 @@ test("scope has no default selectors and matches exact owners case-insensitively
   writeFileSync(include, '[remote "origin"]\nurl = git@github.com:example-org/fixture.git\n');
   git(checkout, "config", "include.path", include);
   assert.equal(repoScope(checkout, scope), "other", "included origin cannot authorize work");
+});
+
+for (const [name, origins, expected] of [
+  ["valid", ["git@github.com:example-org/fixture.git"], "eligible"],
+  ["padded", [" git@github.com:example-org/fixture.git "], "other"],
+  ["newline-padded", ["git@github.com:example-org/fixture.git\n"], "other"],
+  ["valid-plus-empty", ["git@github.com:example-org/fixture.git", ""], "other"],
+]) test(`origin framing preserves ${name} values`, t => {
+  const directory = fixture(t);
+  const checkout = repo(join(directory, "checkout"));
+  for (const origin of origins) git(checkout, "config", "--add", "remote.origin.url", origin);
+  assert.equal(repoScope(checkout, { githubOwners: ["example-org"], roots: [] }), expected);
+  assert.equal(repoScope(checkout, { githubOwners: [], roots: [directory] }), "eligible", "roots remain an independent authorization path");
 });
 
 test("roots are explicit, independent and canonicalized again for every guard", t => {

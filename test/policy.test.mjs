@@ -43,10 +43,57 @@ test("policy validates both priorities, resolves only leading home roots and fre
     for (const value of [policy, policy.codexOrder, policy.profiles, ...policy.profiles, ...policy.profiles.map(profile => profile.accounts), work, work.roots, work.githubOwners, policy.review]) assert.ok(Object.isFrozen(value));
     data.accountOrder.push("work");
     data.work.githubOwners[0] = "changed";
+    data.work.roots[0] = "/changed";
+    data.review.copilotModel = "changed";
+    data.review.codexFallbackModel = "changed";
     assert.deepEqual(work.githubOwners, ["example-org"]);
+    assert.deepEqual(work.roots, [join(homedir(), "projects/workspaces")]);
+    assert.deepEqual(policy.review, { primary: "claude-sonnet-5.5", fallback: "gpt-5.6-luna" });
+    for (const value of [data, data.accountOrder, data.work, data.work.githubOwners, data.work.roots, data.review]) assert.equal(Object.isFrozen(value), false);
   }
   assert.deepEqual(parsePolicy({ version: 1, accountOrder: ["work", "personal"], work: { githubOwners: ["Example-Org"] } }).profiles.find(profile => profile.name === "work").criteria, { githubOwners: ["example-org"], roots: [] });
   assert.deepEqual(parsePolicy({ version: 1, accountOrder: ["personal", "work"], work: { roots: ["/synthetic/$HOME/!literal"] } }).profiles.find(profile => profile.name === "work").criteria, { githubOwners: [], roots: ["/synthetic/$HOME/!literal"] });
+});
+
+test("optional undefined fields remain absent and selectors never enroll work", () => {
+  assert.deepEqual(policyData(parsePolicy({ ...safe, copilotProfile: undefined, work: undefined, review: undefined })), safe);
+  const policy = parsePolicy({ ...safe, work: { githubOwners: undefined, roots: undefined } });
+  assert.deepEqual(policyData(policy), safe);
+  for (const work of [{ githubOwners: ["not/owner"] }, { roots: ["relative"] }]) assert.throws(() => parsePolicy({ ...safe, work }));
+});
+
+test("owner grammar accepts endpoints and rejects empty hyphen segments and Unicode", () => {
+  for (const owner of ["A", "9", "A".repeat(39), "A-9-z"]) {
+    const policy = parsePolicy({ ...full(), work: { githubOwners: [owner] } });
+    assert.deepEqual(policy.profiles.find(profile => profile.name === "work").criteria.githubOwners, [owner.toLowerCase()]);
+  }
+  for (const owner of ["", "a".repeat(40), "-a", "a-", "a--b", "é", "a_b", "a.b", "a b"]) {
+    assert.throws(() => parsePolicy({ ...full(), work: { githubOwners: [owner] } }));
+  }
+});
+
+test("configured review IDs stay narrower than source namespaces and roots reject controls", () => {
+  for (const id of ["A", "0", "native.Model_1:variant-2"]) {
+    assert.deepEqual(parsePolicy({ ...safe, review: { copilotModel: id, codexFallbackModel: id } }).review, { primary: id, fallback: id });
+  }
+  const controls = [...Array.from({ length: 32 }, (_, code) => String.fromCharCode(code)), "\u007f"];
+  for (const id of ["", "é", "custom/direct-model", "two ids", ".model", "_model", ":model", "-model", " model", "model ", ...controls.map(control => `model${control}id`)]) {
+    for (const field of ["copilotModel", "codexFallbackModel"]) assert.throws(() => parsePolicy({ ...full(), review: { ...full().review, [field]: id } }));
+  }
+  for (const root of [" /absolute", "/absolute ", ...controls.map(control => `/absolute${control}root`)]) {
+    assert.throws(() => parsePolicy({ ...full(), work: { roots: [root] } }));
+  }
+});
+
+test("structural diagnostics reveal only schema-owned field labels", () => {
+  for (const [data, label] of [
+    [{ ...safe, copilotProfile: "private-invalid-profile" }, "copilotProfile"],
+    [{ ...safe, work: { roots: [123] } }, "work"],
+    [{ ...safe, review: { copilotModel: 123, codexFallbackModel: "model" } }, "review"],
+    [{ ...safe, "private-extra-field": "private-value" }, "policy"],
+    [{ ...safe, work: { "private-extra-field": "private-value" } }, "work"],
+    [{ ...safe, review: { ...full().review, "private-extra-field": "private-value" } }, "review"],
+  ]) assert.throws(() => parsePolicy(data), error => error.message.includes(label) && !error.message.includes("private"));
 });
 
 const invalid = [

@@ -17,8 +17,9 @@ test("canonical accounts correlate credential identity and independent quota his
 
 test("model namespaces reject malformed native IDs without requiring catalog membership", () => {
   for (const bind of [codexModelId, copilotModelId]) {
-    for (const id of ["", " padded", "padded ", "bad\u0000id", "bad\nid"]) assert.throws(() => bind(id), /Invalid/);
-    assert.equal(bind("custom/direct-model"), "custom/direct-model");
+    const controls = [...Array.from({ length: 32 }, (_, code) => String.fromCharCode(code)), "\u007f"];
+    for (const id of ["", " padded", "padded ", ...controls.map(control => `bad${control}id`)]) assert.throws(() => bind(id), /Invalid/);
+    for (const id of ["custom/direct-model", "模型", "two internal spaces", "native.Model_1:variant-2"]) assert.equal(bind(id), id);
   }
 });
 
