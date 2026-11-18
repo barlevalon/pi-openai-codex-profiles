@@ -1,4 +1,4 @@
-import { getSupportedThinkingLevels, type Provider } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, type AssistantMessage, type Provider } from "@earendil-works/pi-ai";
 import { isDeepStrictEqual } from "node:util";
 import type { ReviewBinding } from "./policy.ts";
 
@@ -33,7 +33,7 @@ export function reviewModel(binding: ReviewBinding | undefined, primary: Model |
 export type Contribution = "none" | "codex";
 export type ReviewTurn = Readonly<{
 	answerer: "copilot" | "codex";
-	ending: "pending" | "stop" | "length" | "tool" | "deferred" | "error" | "aborted";
+	ending: AssistantMessage["stopReason"];
 }>;
 
 export function reviewContribution(previous: Contribution, turn: ReviewTurn): Contribution {

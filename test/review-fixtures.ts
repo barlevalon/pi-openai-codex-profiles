@@ -67,11 +67,22 @@ export async function reviewFixtures(ctx) {
 			} };
 		})();
 	} };
+	let physicalAuthCalls = 0;
+	let snapshots = 0;
 	const registry = {
 		find: (provider, id) => provider === "profile-review" && id === primary.id ? advertised : ctx.modelRegistry.find(provider, id),
-		async getApiKeyAndHeaders() { return { ok: true, apiKey: "fake" }; },
+		async getApiKeyAndHeaders() { physicalAuthCalls++; return { ok: true, apiKey: "fake" }; },
 	};
-	const routing = routingFixture(raw, copilot, () => ({ ...ctx, modelRegistry: registry }), quota, () => {}, alternatePolicy);
+	const ledger = {
+		snapshot(targets, now) { snapshots++; return quota.snapshot(targets, now); },
+		observeDirect: observation => quota.observeDirect(observation),
+	};
+	const routing = routingFixture(raw, copilot, () => ({ ...ctx, modelRegistry: registry }), ledger, () => {}, alternatePolicy);
+	const authOptions = { ctx: { env: async () => undefined, fileExists: async () => false }, signal: new AbortController().signal };
+	assert.deepEqual(routing.review.filterModels(routing.review.getModels(), undefined), routing.review.getModels());
+	assert.deepEqual(await routing.review.auth.apiKey.check(authOptions), { type: "api_key", source: "routing" });
+	assert.deepEqual(await routing.review.auth.apiKey.resolve(authOptions), { auth: {}, source: "routing" });
+	assert.deepEqual({ physicalAuthCalls, snapshots }, { physicalAuthCalls: 0, snapshots: 0 }, "review availability and auth validate without reading budgets or resolving physical auth");
 	const normalResult = await routing.personal.streamSimple(registry.find("openai-codex:personal", otherCodex.id), { messages: [] }).result();
 	assert.equal(normalResult.stopReason, "stop", normalResult.errorMessage);
 	assert.equal(normalResult.provider, "openai-codex:personal");

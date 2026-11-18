@@ -37,7 +37,7 @@ export default function (pi: ExtensionAPI) {
 		const message = event.message;
 		if (ctx.model?.provider !== REVIEW || message.role !== "assistant") return;
 		if (message.provider === PERSONAL || message.provider === WORK || message.provider === "github-copilot") contribution = reviewContribution(contribution, {
-			answerer: message.provider === "github-copilot" ? "copilot" : "codex", ending: message.stopReason === "toolUse" ? "tool" : message.stopReason,
+			answerer: message.provider === "github-copilot" ? "copilot" : "codex", ending: message.stopReason,
 		});
 		if (ctx.mode !== "json" && ctx.mode !== "print") return;
 		if (contribution !== "codex" || (message.stopReason !== "stop" && message.stopReason !== "length")) return;

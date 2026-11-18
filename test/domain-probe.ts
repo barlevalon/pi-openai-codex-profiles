@@ -119,7 +119,10 @@ function domainPlans() {
 	assert.equal(contribution, "none");
 	contribution = reviewContribution(contribution, { answerer: "codex", ending: "aborted" });
 	assert.equal(contribution, "none");
-	contribution = reviewContribution(contribution, { answerer: "codex", ending: "tool" });
+	for (const ending of ["pending", "stop", "length", "toolUse", "deferred"] as const) {
+		assert.equal(reviewContribution("none", { answerer: "codex", ending }), "codex", ending);
+	}
+	contribution = reviewContribution(contribution, { answerer: "codex", ending: "toolUse" });
 	assert.equal(contribution, "codex");
 	assert.equal(reviewContribution(contribution, { answerer: "copilot", ending: "stop" }), "codex");
 }
@@ -319,6 +322,7 @@ async function attemptTransition(ctx: ExtensionContext) {
 					if (mode === "raw-output-item") await options.onProviderStreamEvent?.({ type: "response.output_item.added", item: { type: "reasoning", encrypted_content: "opaque" } }, model);
 					if (mode === "raw-cost") await options.onProviderStreamEvent?.({ response: { usage: { cost: { total: 0.1 } } } }, model);
 					await options.onProviderStreamEvent?.(quotaEvent, model);
+					if (mode === "repeated-quota") await options.onProviderStreamEvent?.(quotaEvent, model);
 				}
 				if (mode === "hook-after-quota") await options.onResponse?.({ status: 429, headers: {} }, model);
 				if (mode === "empty-success-after-quota") {

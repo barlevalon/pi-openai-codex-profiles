@@ -18,7 +18,7 @@ type CopilotApi = ReturnType<typeof githubCopilotProvider> extends Provider<infe
 type VirtualModel = Parameters<ExtensionAPI["registerVirtualModel"]>[0];
 type Terminal = Extract<AssistantMessageEvent, { type: "done" | "error" }>;
 type Start = Extract<AssistantMessageEvent, { type: "start" }>;
-type Progress = Readonly<{ kind: "hidden" }> | Readonly<{ kind: "hidden-quota"; observation: DirectObservation }>
+type Progress = Readonly<{ kind: "hidden" }> | Readonly<{ kind: "hidden-quota" }>
 	| Readonly<{ kind: "committed" }> | Readonly<{ kind: "blocked"; cause: unknown }>;
 type Outcome = Readonly<{ kind: "answered"; terminal: Extract<Terminal, { type: "done" }>; start?: Start }>
 	| Readonly<{ kind: "stopped"; terminal: Extract<Terminal, { type: "error" }>; start?: Start }>
@@ -72,15 +72,19 @@ export function createNativeRouting(
 	function candidates(intent: Parameters<typeof eligibleCandidates>[2]): Candidates {
 		const eligibility = eligibleCandidates(policy, scope(), intent);
 		if (eligibility.kind === "unavailable") throw new Error(`Routing is unavailable for this profile: ${eligibility.reason}`);
-		const selection = selectTargets(eligibility.targets, quota.snapshot(eligibility.targets, Date.now()));
+		return selectAvailable(eligibility.targets);
+	}
+	function selectAvailable(targets: Candidates): Candidates {
+		const selection = selectTargets(targets, quota.snapshot(targets, Date.now()));
 		if (selection.kind === "unavailable") {
 			if (selection.reason === "budget-unreadable") throw new Error("Cannot read configured routing quota state");
 			throw new Error("All configured routing targets are cooling down");
 		}
 		return selection.targets;
 	}
-	function requireReview(id: string | undefined = policy.review?.primary, selected?: Model<Api>) {
+	function requireReview(selected?: Model<Api>): Candidates {
 		const binding = policy.review;
+		const id = selected?.id ?? binding?.primary;
 		if (!binding || id !== binding.primary) throw new Error("Review is not configured for this selection");
 		requireAccount(COPILOT_ACCOUNT);
 		reviewModel(binding, copilot.getModels().find(model => model.id === binding.primary), codex.getModels().find(model => model.id === binding.fallback));
@@ -92,6 +96,7 @@ export function createNativeRouting(
 		for (const target of eligibility.targets) {
 			if (target.account.credential !== COPILOT_ACCOUNT.credential) reviewModel(binding, primary, physical(target), advertised);
 		}
+		return eligibility.targets;
 	}
 	function reviewAllowed() {
 		try { requireReview(); return true; } catch { return false; }
@@ -124,7 +129,7 @@ export function createNativeRouting(
 			function observe(observation: DirectObservation | undefined) {
 				if (!observation) return;
 				quota.observeDirect(observation);
-				if (attempt.progress.kind === "hidden" || attempt.progress.kind === "hidden-quota") attempt.progress = { kind: "hidden-quota", observation };
+				if (attempt.progress.kind === "hidden") attempt.progress = { kind: "hidden-quota" };
 				if ((options.maxRetries ?? 0) > 0) quotaAbort.abort();
 			}
 			try {
@@ -170,9 +175,8 @@ export function createNativeRouting(
 					},
 					onProviderStreamEvent: async (...args: Parameters<NonNullable<StreamOptions["onProviderStreamEvent"]>>) => {
 						try {
-							const evidence: unknown = structuredClone(args[0]);
-							if (rawHasOutput(evidence)) commit();
-							observe(decodeQuotaPayload(target.account, evidence));
+							if (rawHasOutput(args[0])) commit();
+							observe(decodeQuotaPayload(target.account, args[0]));
 							guard();
 							await requestOptions.onProviderStreamEvent?.(...args);
 							guard();
@@ -197,7 +201,6 @@ export function createNativeRouting(
 				}
 				if (!terminal || terminal.type === "done") options.signal?.throwIfAborted();
 				guard();
-				if (!terminal) throw new Error("Provider stream ended without a terminal event");
 			} catch (error) { block(error); }
 			if (attempt.progress.kind === "blocked" || !terminal) {
 				const cause = attempt.progress.kind === "blocked" ? attempt.progress.cause : new Error("Provider stream ended without a terminal event");
@@ -307,7 +310,7 @@ export function createNativeRouting(
 		streamSimple(source, transcript, options: SimpleStreamOptions = {}) {
 			return openStream(
 				{ ...source, provider: REVIEW }, options,
-				() => { requireReview(source.id, source); return candidates({ kind: "review" }); }, physical,
+				() => selectAvailable(requireReview(source)), physical,
 				(target, model, hooks) => target.account.credential === COPILOT_ACCOUNT.credential
 					? copilot.streamSimple(copilotSource(model), transcript, hooks)
 					: codex.streamSimple(codexSource(model), transcript, hooks),
