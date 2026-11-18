@@ -23,7 +23,7 @@ async function host(scenario, check) {
   const personalToken = token("personal");
   const workToken = token("work");
   if (!scenario.profile) {
-    if (scenario.policy !== "missing") writeFileSync(join(dir, "codex-routing-policy.json"), scenario.policy === "malformed" ? "{" : JSON.stringify(scenario.policy ?? { version: 1, accountOrder: scenario.order ?? ["work", "personal"], work: { githubOwners: ["example-org"] }, review: { copilotModel: scenario.reviewId ?? "claude-sonnet-5.5", codexFallbackModel: scenario.fallbackId ?? "gpt-5.6-luna" } }));
+    if (scenario.policy !== "missing") writeFileSync(join(dir, "codex-routing-policy.json"), scenario.policy === "malformed" ? "{" : JSON.stringify(scenario.policy ?? { version: 1, copilotProfile: "personal", accountOrder: scenario.order ?? ["work", "personal"], work: { githubOwners: ["example-org"] }, review: { copilotModel: scenario.reviewId ?? "claude-sonnet-5.5", codexFallbackModel: scenario.fallbackId ?? "gpt-5.6-luna" } }));
     if (scenario.projectPolicy) writeFileSync(join(cwd, "codex-routing-policy.json"), JSON.stringify({ version: 1, accountOrder: ["work", "personal"], work: { githubOwners: ["example-org"] } }));
     writeFileSync(join(dir, "auth.json"), JSON.stringify({
       "openai-codex:personal": { type: "oauth", access: personalToken, refresh: "fake-personal", expires: Date.now() + 86400000 },

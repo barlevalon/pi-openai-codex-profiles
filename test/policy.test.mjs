@@ -8,15 +8,18 @@ import test from "node:test";
 import { loadPolicy as readPolicy, parsePolicy } from "../policy.ts";
 
 function policyData(policy) {
+  const work = policy.profiles.find(profile => profile.name === "work")?.criteria;
+  const copilot = policy.profiles.find(profile => profile.accounts.some(account => account.credential === "github-copilot"));
   return {
-    version: policy.version, accountOrder: policy.accountOrder,
-    ...(policy.work ? { work: policy.work } : {}),
-    ...(policy.review.kind === "ready" ? { review: { copilotModel: policy.review.binding.primary, codexFallbackModel: policy.review.binding.fallback } } : {}),
+    version: 1, accountOrder: policy.codexOrder.map(account => account.credential === "openai-codex:work" ? "work" : "personal"),
+    ...(work ? { work } : {}),
+    ...(copilot ? { copilotProfile: copilot.name } : {}),
+    ...(policy.review ? { review: { copilotModel: policy.review.primary, codexFallbackModel: policy.review.fallback } } : {}),
   };
 }
 const loadPolicy = (directory, notice) => policyData(readPolicy(directory, notice));
 
-const full = () => ({ version: 1, accountOrder: ["work", "personal"], work: { githubOwners: ["example-org"], roots: ["~/projects/workspaces"] }, review: { copilotModel: "claude-sonnet-5.5", codexFallbackModel: "gpt-5.6-luna" } });
+const full = () => ({ version: 1, copilotProfile: "work", accountOrder: ["work", "personal"], work: { githubOwners: ["example-org"], roots: ["~/projects/workspaces"] }, review: { copilotModel: "claude-sonnet-5.5", codexFallbackModel: "gpt-5.6-luna" } });
 const safe = { version: 1, accountOrder: ["personal"] };
 
 function fixture(t) {
@@ -34,15 +37,16 @@ test("policy validates both priorities, resolves only leading home roots and fre
   for (const order of [["personal"], ["personal", "work"], ["work", "personal"]]) {
     const data = { ...full(), accountOrder: order };
     const policy = parsePolicy(data);
-    assert.deepEqual(policy.accountOrder, order);
-    assert.deepEqual(policy.work.roots, [join(homedir(), "projects/workspaces")]);
-    for (const value of [policy, policy.accountOrder, policy.work, policy.work.roots, policy.work.githubOwners, policy.review, policy.review.binding]) assert.ok(Object.isFrozen(value));
+    assert.deepEqual(policyData(policy).accountOrder, order);
+    const work = policy.profiles.find(profile => profile.name === "work").criteria;
+    assert.deepEqual(work.roots, [join(homedir(), "projects/workspaces")]);
+    for (const value of [policy, policy.codexOrder, policy.profiles, ...policy.profiles, ...policy.profiles.map(profile => profile.accounts), work, work.roots, work.githubOwners, policy.review]) assert.ok(Object.isFrozen(value));
     data.accountOrder.push("work");
     data.work.githubOwners[0] = "changed";
-    assert.deepEqual(policy.work.githubOwners, ["example-org"]);
+    assert.deepEqual(work.githubOwners, ["example-org"]);
   }
-  assert.deepEqual(parsePolicy({ version: 1, accountOrder: ["work", "personal"], work: { githubOwners: ["Example-Org"] } }).work, { githubOwners: ["example-org"], roots: [] });
-  assert.deepEqual(parsePolicy({ version: 1, accountOrder: ["personal", "work"], work: { roots: ["/synthetic/$HOME/!literal"] } }).work, { githubOwners: [], roots: ["/synthetic/$HOME/!literal"] });
+  assert.deepEqual(parsePolicy({ version: 1, accountOrder: ["work", "personal"], work: { githubOwners: ["Example-Org"] } }).profiles.find(profile => profile.name === "work").criteria, { githubOwners: ["example-org"], roots: [] });
+  assert.deepEqual(parsePolicy({ version: 1, accountOrder: ["personal", "work"], work: { roots: ["/synthetic/$HOME/!literal"] } }).profiles.find(profile => profile.name === "work").criteria, { githubOwners: [], roots: ["/synthetic/$HOME/!literal"] });
 });
 
 const invalid = [

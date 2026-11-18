@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import type { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { nativeProviders } from "../native-guards.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { createQuotaLedger } from "../quota.ts";
-import { createNativeRouting } from "../routing.ts";
+import { routingFixture } from "./routing-fixture.ts";
 import { loadPolicy } from "../policy.ts";
 
 export async function streamFixtures(ctx) {
-	const native = builtinProviders().find(provider => provider.id === "openai-codex")!;
+	const native = nativeProviders().codex;
 	const source = ctx.modelRegistry.find("openai-codex:work", "gpt-5.6-luna");
 	for (const mode of ["mutation", "usage", "raw-content", "hook-mutation", "provider-abort", "malformed", "scope-change", "scope-response", "scope-event", "scope-fetch", "scope-fetch-entry", "unbound"]) {
 		let current = ctx;
@@ -50,15 +51,15 @@ export async function streamFixtures(ctx) {
 				})();
 			},
 		};
-		const routing = createNativeRouting(raw, raw, () => current, createQuotaLedger(join(getAgentDir(), `stream-${mode}`), assert.fail), assert.fail, loadPolicy(getAgentDir(), assert.fail));
+		const routing = routingFixture(raw, nativeProviders().copilot, () => current, createQuotaLedger(join(getAgentDir(), `stream-${mode}`), assert.fail), assert.fail, loadPolicy(getAgentDir(), assert.fail));
 		if (mode === "unbound") {
 			current = undefined;
-			const result = await routing.accountProvider("work").streamSimple({ ...source, provider: "openai-codex:personal" }, { messages: [] }, { apiKey: "fake" }).result();
+			const result = await routing.work.streamSimple({ ...source, provider: "openai-codex:personal" }, { messages: [] }, { apiKey: "fake" }).result();
 			assert.equal(result.stopReason, "error");
 			assert.match(result.errorMessage, /restricted/);
 			continue;
 		}
-		const stream = routing.accountProvider("work").streamSimple(source, { messages: [] }, {
+		const stream = routing.work.streamSimple(source, { messages: [] }, {
 			apiKey: "fake", transport: "auto", reasoning: "high",
 			onPayload() { if (mode === "scope-change") current = { ...ctx, cwd: getAgentDir() }; },
 			async onResponse() { await Promise.resolve(); if (mode === "scope-response") current = { ...ctx, cwd: getAgentDir() }; },

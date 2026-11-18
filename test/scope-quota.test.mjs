@@ -6,8 +6,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { repoScope as resolveScope } from "../scope.ts";
 const repoScope = (cwd, root) => resolveScope(cwd, { githubOwners: ["example-org"], roots: [root] });
-import { createQuotaLedger, quotaResponse, quotaUntil, RETRY_COOLDOWN_MS } from "../quota.ts";
-import { codexModelId, copilotModelId } from "../targets.ts";
+import { createQuotaLedger } from "../quota.ts";
+import { decodeQuotaPayload, decodeQuotaResponse, RETRY_COOLDOWN_MS } from "../quota-protocol.ts";
+const quotaUntil = (service, payload, status, retryAfter, now) => decodeQuotaPayload(service === "codex" ? PERSONAL_ACCOUNT : COPILOT_ACCOUNT, payload, status, retryAfter, now)?.until;
+const quotaResponse = (service, response, signal) => decodeQuotaResponse(service === "codex" ? PERSONAL_ACCOUNT : COPILOT_ACCOUNT, response, signal);
+import { PERSONAL_ACCOUNT, WORK_ACCOUNT, COPILOT_ACCOUNT, codexModelId, copilotModelId } from "../targets.ts";
 import { nativeProbe } from "./native-probe.mjs";
 
 function git(path, ...args) {
@@ -119,18 +122,18 @@ test("independent processes merge immutable observations by maximum reset", { ti
       mkdirSync(profile);
       return nativeProbe("quota-worker", profile, profile, { DOMAIN_QUOTA_DIRECTORY: path, DOMAIN_QUOTA_UNTIL: String(until) });
     }));
-    const work = { service: "codex", account: "work", model: codexModelId("fixture") };
-    const review = { service: "copilot-review", model: copilotModelId("fixture") };
-    assert.deepEqual(createQuotaLedger(path, assert.fail).snapshot([work], Date.now()).work, { kind: "cooling", until: Math.max(...untils) });
+    const work = { account: WORK_ACCOUNT, modelId: codexModelId("fixture") };
+    const review = { account: COPILOT_ACCOUNT, modelId: copilotModelId("fixture") };
+    assert.deepEqual(createQuotaLedger(path, assert.fail).snapshot([work], Date.now()).get("work-codex"), { kind: "cooling", until: Math.max(...untils) });
     assert.equal(statSync(path).mode & 0o777, 0o700);
     for (const file of readdirSync(path)) {
       assert.equal(statSync(join(path, file)).mode & 0o777, 0o600);
       assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(path, file), "utf8"))).sort(), ["key", "until", "version"]);
     }
     writeFileSync(join(path, "work-codex.bad.json"), "{}");
-    assert.equal(createQuotaLedger(path, assert.fail).snapshot([work], Date.now()).work.kind, "unreadable");
-    assert.equal(createQuotaLedger(path, assert.fail).snapshot([review], Date.now()).review.kind, "available");
+    assert.equal(createQuotaLedger(path, assert.fail).snapshot([work], Date.now()).get("work-codex").kind, "unreadable");
+    assert.equal(createQuotaLedger(path, assert.fail).snapshot([review], Date.now()).get("copilot-review").kind, "available");
     writeFileSync(join(path, "copilot-review.bad.json"), "{}");
-    assert.equal(createQuotaLedger(path, assert.fail).snapshot([review], Date.now()).review.kind, "unreadable");
+    assert.equal(createQuotaLedger(path, assert.fail).snapshot([review], Date.now()).get("copilot-review").kind, "unreadable");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

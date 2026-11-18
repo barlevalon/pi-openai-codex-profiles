@@ -3,11 +3,13 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { normalizeContext, type OAuthCredential, type Provider } from "@earendil-works/pi-ai";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import type { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { nativeProviders } from "../native-guards.ts";
 import { getAgentDir, ModelRegistry, ModelRuntime, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parsePolicy } from "../policy.ts";
 import { createQuotaLedger } from "../quota.ts";
-import { createNativeRouting, PERSONAL, WORK } from "../routing.ts";
+import { PERSONAL, WORK } from "../routing.ts";
+import { routingFixture } from "./routing-fixture.ts";
 
 function deferred() {
 	let resolve: () => void = () => {};
@@ -38,9 +40,9 @@ export default function (pi: ExtensionAPI) {
 			const refreshTokens: string[] = [];
 			let conversions = 0;
 			let requests = 0;
-			const codex = builtinProviders().find(provider => provider.id === "openai-codex")!;
-			const copilot = builtinProviders().find(provider => provider.id === "github-copilot")!;
-			const native: Provider = {
+			const codex = nativeProviders().codex;
+			const copilot = nativeProviders().copilot;
+			const native: ReturnType<typeof openaiCodexProvider> = {
 				...codex,
 				auth: { oauth: {
 					name: "Synthetic one-use OAuth",
@@ -63,10 +65,10 @@ export default function (pi: ExtensionAPI) {
 				stream() { requests++; assert.fail("Denied work request reached the native provider"); },
 				streamSimple() { requests++; assert.fail("Denied work request reached the native provider"); },
 			};
-			const policy = parsePolicy({ version: 1, accountOrder: ["work", "personal"], work: { roots: [root] } });
-			const routing = createNativeRouting(native, copilot, () => current, createQuotaLedger(join(directory, "quota"), assert.fail), assert.fail, policy);
-			const work = routing.accountProvider("work");
-			const personal = routing.accountProvider("personal");
+			const policy = parsePolicy({ version: 1, copilotProfile: "personal", accountOrder: ["work", "personal"], work: { roots: [root] } });
+			const routing = routingFixture(native, copilot, () => current, createQuotaLedger(join(directory, "quota"), assert.fail), assert.fail, policy);
+			const work = routing.work;
+			const personal = routing.personal;
 			registry.registerProvider(work);
 			registry.registerProvider(personal);
 			const model = work.getModels()[0];

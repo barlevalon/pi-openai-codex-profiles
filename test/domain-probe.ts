@@ -4,24 +4,26 @@ import { mkdirSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from "
 import { setImmediate } from "node:timers/promises";
 import { join } from "node:path";
 import { createAssistantMessageEventStream, normalizeContext, type AssistantMessage, type Provider, type StreamOptions } from "@earendil-works/pi-ai";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import type { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { nativeProviders } from "../native-guards.ts";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parsePolicy } from "../policy.ts";
 import { createQuotaLedger, type QuotaLedger } from "../quota.ts";
-import { createNativeRouting, planCodex, planReview, type DirectQuotaProof } from "../routing.ts";
+import { decodeQuotaPayload, decodeQuotaResponse, type DirectObservation } from "../quota-protocol.ts";
+import { routingFixture } from "./routing-fixture.ts";
 import * as routingAPI from "../routing.ts";
 import * as policyAPI from "../policy.ts";
-import { reviewContribution, reviewModel } from "../review.ts";
-import { codexModelId, copilotModelId, type AccountOrder, type BudgetView, type Target } from "../targets.ts";
+import { reviewContribution } from "../review.ts";
+import { COPILOT_ACCOUNT, PERSONAL_ACCOUNT, WORK_ACCOUNT, codexModelId, copilotModelId, eligibleCandidates, selectTargets, type ModelTarget } from "../targets.ts";
 
 type Model = ReturnType<Provider["getModels"]>[number];
-const codex = builtinProviders().find(provider => provider.id === "openai-codex")!;
-const copilot = builtinProviders().find(provider => provider.id === "github-copilot")!;
+const codex = nativeProviders().codex;
+const copilot = nativeProviders().copilot;
 const fallback = codex.getModels().find(model => model.id === "gpt-5.6-luna")!;
 const primary = copilot.getModels().find(model => model.id === "claude-sonnet-5.5")!;
-const personal: Target = { service: "codex", account: "personal", model: codexModelId(fallback.id) };
-const work: Target = { service: "codex", account: "work", model: codexModelId(fallback.id) };
-const review: Target = { service: "copilot-review", model: copilotModelId(primary.id) };
+const personal: ModelTarget = { account: PERSONAL_ACCOUNT, modelId: codexModelId(fallback.id) };
+const work: ModelTarget = { account: WORK_ACCOUNT, modelId: codexModelId(fallback.id) };
+const review: ModelTarget = { account: COPILOT_ACCOUNT, modelId: copilotModelId(primary.id) };
 
 function message(model: Model): AssistantMessage {
 	return {
@@ -52,131 +54,67 @@ function registryContext(ctx: ExtensionContext, advertised?: Model): ExtensionCo
 	} }) };
 }
 
-async function directObservation(ctx: ExtensionContext, ledger: QuotaLedger, target: Target, until: number): Promise<DirectQuotaProof> {
-	const { root, cwd } = eligibleCheckout();
-	const policy = parsePolicy({
-		version: 1, accountOrder: target.service === "codex" && target.account === "work" ? ["work", "personal"] : ["personal"],
-		work: { roots: [root] }, review: { copilotModel: primary.id, codexFallbackModel: fallback.id },
-	});
-	assert.equal(policy.review.kind, "ready");
-	if (policy.review.kind !== "ready") throw new Error("Missing test review binding");
-	const advertised = reviewModel(policy.review.binding, primary, fallback);
-	let observed: DirectQuotaProof | undefined;
-	const capture: QuotaLedger = {
-		snapshot: (candidates, now) => ledger.snapshot(candidates, now),
-		observeDirect(proof) { observed = proof; ledger.observeDirect(proof); },
-	};
-	const streamSimple: Provider["streamSimple"] = (model, _transcript, options = {}) => {
-		const stream = createAssistantMessageEventStream();
-		(async () => {
-			const result = message(model);
-			if (model.provider === (target.service === "codex" ? `openai-codex:${target.account}` : "github-copilot")) {
-				if (target.service === "codex") await options.onProviderStreamEvent?.({ type: "error", error: { code: "usage_limit_reached", resets_at: until / 1000 } }, model);
-				else await options.fetch!("http://fixture.invalid", {});
-				stream.push({ type: "error", reason: "error", error: result });
-			} else {
-				result.stopReason = "stop";
-				stream.push({ type: "done", reason: "stop", message: result });
-			}
-			stream.end();
-		})().catch(error => {
-			stream.push({ type: "error", reason: "error", error: { ...message(model), errorMessage: String(error) } });
-			stream.end();
-		});
-		return stream;
-	};
-	const routing = createNativeRouting({ ...codex, streamSimple }, { ...copilot, streamSimple }, () => ({ ...registryContext(ctx, advertised), cwd }), capture, () => {}, policy);
-	if (target.service === "codex") await routing.accountProvider(target.account).streamSimple({ ...fallback, provider: `openai-codex:${target.account}` }, normalizeContext({ messages: [] }), { apiKey: "fake" }).result();
-	else {
-		assert.equal(routing.reviewRegistration.kind, "ready");
-		if (routing.reviewRegistration.kind !== "ready") throw new Error("Missing test review provider");
-		await routing.reviewRegistration.provider.streamSimple(advertised, normalizeContext({ messages: [] }), {
-			fetch: async () => new Response(JSON.stringify({ error: { code: "quota_exceeded" } }), { status: 402, headers: { "retry-after": new Date(until).toUTCString() } }),
-		}).result();
-	}
-	assert.ok(observed, "only the bound native decoder supplies direct proof");
-	return observed;
+async function directObservation(ledger: QuotaLedger, target: ModelTarget, until: number): Promise<DirectObservation> {
+	const observation = target.account.credential === "github-copilot"
+		? await decodeQuotaResponse(target.account, new Response(JSON.stringify({ error: { code: "quota_exceeded" } }), { status: 402, headers: { "retry-after": new Date(until).toUTCString() } }))
+		: decodeQuotaPayload(target.account, { type: "error", error: { code: "usage_limit_reached", resets_at: until / 1000 } });
+	assert.ok(observation);
+	ledger.observeDirect(observation);
+	return observation;
 }
 
-async function quotaCorruption(ctx: ExtensionContext) {
+async function quotaCorruption(_ctx: ExtensionContext) {
 	const directory = join(getAgentDir(), "quotas");
 	const until = Math.floor(Date.now() / 1000) * 1000 + 600000;
 	const writer = createQuotaLedger(directory, assert.fail);
-	const proof = await directObservation(ctx, writer, review, until);
+	const proof = await directObservation(writer, review, until);
 	const reader = createQuotaLedger(directory, assert.fail);
-	assert.deepEqual(reader.snapshot([review], Date.now()).review, { kind: "cooling", until });
+	assert.deepEqual(reader.snapshot([review], Date.now()).get("copilot-review"), { kind: "cooling", until });
 	writeFileSync(join(directory, "copilot-review.bad.json"), "{}");
-	assert.equal(reader.snapshot([review], Date.now()).review.kind, "unreadable", "cached disk evidence is not local evidence");
-	assert.deepEqual(writer.snapshot([review], Date.now()).review, { kind: "cooling", until });
+	assert.equal(reader.snapshot([review], Date.now()).get("copilot-review")!.kind, "unreadable", "cached disk evidence is not local evidence");
+	assert.deepEqual(writer.snapshot([review], Date.now()).get("copilot-review"), { kind: "cooling", until });
 	reader.observeDirect(proof);
-	assert.deepEqual(reader.snapshot([review], Date.now()).review, { kind: "cooling", until });
-	assert.equal(reader.snapshot([review], until + 1).review.kind, "unreadable", "expired local evidence cannot mask corruption");
+	assert.deepEqual(reader.snapshot([review], Date.now()).get("copilot-review"), { kind: "cooling", until });
+	assert.equal(reader.snapshot([review], until + 1).get("copilot-review")!.kind, "unreadable", "expired local evidence cannot mask corruption");
 	const blocked = join(getAgentDir(), "blocked");
 	writeFileSync(blocked, "not a directory");
 	const warnings: string[] = [];
 	const local = createQuotaLedger(blocked, warning => warnings.push(warning));
 	local.observeDirect(proof);
 	assert.equal(warnings.length, 1);
-	assert.deepEqual(local.snapshot([review], Date.now()).review, { kind: "cooling", until }, "failed persistence retains direct evidence");
+	assert.deepEqual(local.snapshot([review], Date.now()).get("copilot-review"), { kind: "cooling", until });
 	assert.ok(Object.isFrozen(proof));
-	assert.ok(Object.isFrozen(proof.target));
-	assert.throws(() => Object.assign(proof.target, { model: codexModelId("changed") }), TypeError);
-	assert.throws(() => Object.assign(proof, { target: work }), TypeError);
+	assert.ok(Object.isFrozen(proof.account));
+	assert.throws(() => Object.assign(proof.account, { budget: "work-codex" }), TypeError);
+	assert.throws(() => Object.assign(proof, { account: WORK_ACCOUNT }), TypeError);
 	assert.deepEqual({ ...proof }, {}, "spreading proof loses its private payload");
-	const getter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(proof), "target")!.get!;
-	assert.throws(() => getter.call({ ...proof, target: work }), TypeError);
+	assert.throws(() => Reflect.apply(local.observeDirect, local, [{ ...proof, account: WORK_ACCOUNT, until }]), TypeError);
 }
 
-async function quotaWorker(ctx: ExtensionContext) {
+async function quotaWorker(_ctx: ExtensionContext) {
 	const directory = process.env.DOMAIN_QUOTA_DIRECTORY!;
 	const until = Number(process.env.DOMAIN_QUOTA_UNTIL);
-	const proof = await directObservation(ctx, createQuotaLedger(join(getAgentDir(), "native-evidence"), assert.fail), work, until);
+	const proof = await directObservation(createQuotaLedger(join(getAgentDir(), "native-evidence"), assert.fail), work, until);
 	createQuotaLedger(directory, assert.fail).observeDirect(proof);
 	assert.equal(proof.until, until);
-	assert.deepEqual(proof.target, work);
+	assert.equal(proof.account, WORK_ACCOUNT);
 	assert.equal(readdirSync(directory).some(name => name.startsWith("work-codex.") && name.endsWith(".json")), true);
 }
 
 function domainPlans() {
-	const available = { kind: "available" } as const;
-	const cooling = { kind: "cooling", until: Date.now() + 60000 } as const;
-	const unreadable = { kind: "unreadable" } as const;
-	const orders: AccountOrder[] = [["personal"], ["personal", "work"], ["work", "personal"]];
-	for (const accountOrder of orders) for (const scope of ["eligible", "other", "unknown"] as const) {
-		const policy = parsePolicy({ version: 1, accountOrder, work: { githubOwners: ["example-org"] }, review: { copilotModel: primary.id, codexFallbackModel: fallback.id } });
-		for (const personalState of [available, cooling, unreadable]) for (const workState of [available, cooling, unreadable]) {
-			const budgets: BudgetView = { personal: personalState, work: workState, review: available };
-			const planned = planCodex(policy, codexModelId(fallback.id), scope, budgets);
-			const candidates = scope === "eligible" ? accountOrder : ["personal"] as const;
-			const expected = candidates.filter(account => budgets[account].kind === "available");
-			if (personalState.kind === "unreadable") assert.deepEqual(planned, { kind: "blocked", reason: "personal-unreadable" });
-			else if (!expected.length) assert.deepEqual(planned, { kind: "blocked", reason: "all-cooling" });
-			else {
-				assert.equal(planned.kind, "planned");
-				if (planned.kind !== "planned") throw new Error("Missing test plan");
-				assert.deepEqual(planned.plan.targets.map(target => target.account), expected);
-				assert.equal(new Set(planned.plan.targets.map(target => target.account)).size, planned.plan.targets.length);
-				assert.ok(planned.plan.targets.every(target => target.model === fallback.id));
-			}
-			const reviewPlan = planReview(policy, scope, budgets);
-			if (personalState.kind === "unreadable") assert.deepEqual(reviewPlan, { kind: "blocked", reason: "personal-unreadable" });
-			else {
-				assert.equal(reviewPlan.kind, "planned");
-				if (reviewPlan.kind !== "planned") throw new Error("Missing test review plan");
-				assert.deepEqual(reviewPlan.plan.targets, [review, ...expected.map(account => ({ service: "codex", account, model: fallback.id }))]);
-			}
-		}
-	}
-	const disabled = parsePolicy({ version: 1, accountOrder: ["personal"] });
-	const restricted = { personal: available, get work(): never { throw new Error("unrelated work budget inspected"); }, get review(): never { throw new Error("unrelated review budget inspected"); } };
-	assert.equal(planCodex(disabled, codexModelId(fallback.id), "eligible", restricted).kind, "planned");
-	assert.deepEqual(planReview(disabled, "eligible", restricted), { kind: "blocked", reason: "review-not-ready" });
-	const policy = parsePolicy({ version: 1, accountOrder: ["personal"], review: { copilotModel: primary.id, codexFallbackModel: fallback.id } });
-	assert.deepEqual(planReview(policy, "other", { personal: available, work: available, review: unreadable }), { kind: "blocked", reason: "review-unreadable" });
-	const fallbackPlan = planReview(policy, "other", { personal: available, work: unreadable, review: cooling });
-	assert.equal(fallbackPlan.kind, "planned");
-	if (fallbackPlan.kind === "planned") assert.deepEqual(fallbackPlan.plan.targets, [personal]);
-	assert.deepEqual(planReview(policy, "other", { personal: cooling, work: available, review: cooling }), { kind: "blocked", reason: "all-cooling" });
+	const policy = parsePolicy({ version: 1, accountOrder: ["work", "personal"], copilotProfile: "work", work: { githubOwners: ["example-org"] }, review: { copilotModel: primary.id, codexFallbackModel: fallback.id } });
+	for (const scope of ["other", "unknown"] as const) assert.deepEqual(eligibleCandidates(policy, scope, { kind: "review" }), { kind: "unavailable", reason: "profile-denied" });
+	const eligible = eligibleCandidates(policy, "eligible", { kind: "review" });
+	assert.equal(eligible.kind, "eligible");
+	if (eligible.kind !== "eligible") throw new Error("Missing eligible review");
+	assert.deepEqual(eligible.targets, [review, work, personal]);
+	const ready = selectTargets(eligible.targets, new Map([
+		["copilot-review", { kind: "cooling", until: Date.now() + 10000 }],
+		["work-codex", { kind: "unreadable" }],
+		["personal-codex", { kind: "available" }],
+	]));
+	assert.equal(ready.kind, "selected");
+	if (ready.kind === "selected") assert.deepEqual(ready.targets, [personal]);
 	let contribution = reviewContribution("none", { answerer: "codex", ending: "error" });
 	assert.equal(contribution, "none");
 	contribution = reviewContribution(contribution, { answerer: "codex", ending: "aborted" });
@@ -187,39 +125,28 @@ function domainPlans() {
 }
 
 function authority() {
-	const input = { version: 1, accountOrder: ["work", "personal"], work: { githubOwners: ["example-org"], roots: ["/synthetic/root"] }, review: { copilotModel: primary.id, codexFallbackModel: fallback.id } };
+	const input = { version: 1, accountOrder: ["work", "personal"], copilotProfile: "work", work: { githubOwners: ["example-org"], roots: ["/synthetic/root"] }, review: { copilotModel: primary.id, codexFallbackModel: fallback.id } };
 	const policy = parsePolicy(input);
 	input.accountOrder.reverse();
 	input.work.githubOwners[0] = "changed";
 	input.work.roots[0] = "/changed";
 	input.review.codexFallbackModel = "changed";
-	assert.deepEqual(policy.accountOrder, ["work", "personal"]);
-	assert.deepEqual(policy.work, { githubOwners: ["example-org"], roots: ["/synthetic/root"] });
-	assert.equal(policy.review.kind, "ready");
-	if (policy.review.kind !== "ready") throw new Error("Missing test binding");
-	const binding = policy.review.binding;
-	assert.equal(binding.fallback, fallback.id);
-	assert.throws(() => Object.assign(binding, { fallback: codexModelId("changed") }), TypeError);
-	assert.throws(() => Object.assign(policy, { accountOrder: ["personal"] }), TypeError);
-	assert.throws(() => Array.prototype.push.call(policy.accountOrder, "work"), TypeError);
-	const planned = planReview(policy, "eligible", { personal: { kind: "available" }, work: { kind: "available" }, review: { kind: "available" } });
-	assert.equal(planned.kind, "planned");
-	if (planned.kind !== "planned") throw new Error("Missing test plan");
-	const plan = planned.plan;
-	for (const value of [policy, policy.review, binding, plan, plan.targets, ...plan.targets]) assert.ok(Object.isFrozen(value));
-	assert.throws(() => Object.assign(plan.targets[0], { model: copilotModelId("changed") }), TypeError);
-	assert.throws(() => Object.assign(plan, { targets: [personal, personal] }), TypeError);
-	for (const [value, key] of [[policy, "accountOrder"], [binding, "fallback"], [plan, "targets"]] as const) {
-		const getter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(value), key)!.get!;
-		assert.throws(() => getter.call({ ...value }), TypeError);
-	}
-	for (const name of ["Attempt", "RetryableQuota", "ProviderQuota", "OrderedPlan", "finish", "routing"]) assert.equal(name in routingAPI, false, name);
+	assert.deepEqual(policy.codexOrder, [WORK_ACCOUNT, PERSONAL_ACCOUNT]);
+	const workProfile = policy.profiles.find(profile => profile.name === "work");
+	assert.ok(workProfile && workProfile.name === "work");
+	assert.deepEqual(workProfile.criteria, { githubOwners: ["example-org"], roots: ["/synthetic/root"] });
+	assert.equal(policy.review?.fallback, fallback.id);
+	assert.throws(() => Object.assign(policy.review!, { fallback: codexModelId("changed") }), TypeError);
+	assert.throws(() => Object.assign(policy, { codexOrder: [PERSONAL_ACCOUNT] }), TypeError);
+	assert.throws(() => Array.prototype.push.call(policy.codexOrder, WORK_ACCOUNT), TypeError);
+	for (const value of [policy, policy.review, policy.profiles, policy.codexOrder, ...policy.profiles, ...policy.profiles.map(profile => profile.accounts)]) assert.ok(Object.isFrozen(value));
+	for (const name of ["Attempt", "RetryableQuota", "ProviderQuota", "OrderedPlan", "finish", "routing", "planReview", "planCodex"]) assert.equal(name in routingAPI, false, name);
 	for (const name of ["BoundReview", "ParsedPolicy"]) assert.equal(name in policyAPI, false, name);
 	const directory = join(getAgentDir(), "unrelated-budget");
 	mkdirSync(directory);
 	writeFileSync(join(directory, "copilot-review.bad.json"), "{}");
 	writeFileSync(join(directory, "work-codex.bad.json"), "{}");
-	assert.deepEqual(createQuotaLedger(directory, assert.fail).snapshot([personal], Date.now()), { personal: { kind: "available" }, work: { kind: "available" }, review: { kind: "available" } });
+	assert.deepEqual([...createQuotaLedger(directory, assert.fail).snapshot([personal], Date.now())], [["personal-codex", { kind: "available" }]]);
 }
 
 async function authScope(ctx: ExtensionContext) {
@@ -242,8 +169,8 @@ async function authScope(ctx: ExtensionContext) {
 	let current = { ...base, cwd, modelRegistry: registry };
 	const native = { ...codex, streamSimple() { calls++; assert.fail("scope changed during auth await reached native provider"); } };
 	const policy = parsePolicy({ version: 1, accountOrder: ["work", "personal"], work: { roots: [root] } });
-	const routing = createNativeRouting(native, copilot, () => current, createQuotaLedger(join(getAgentDir(), "auth-scope"), assert.fail), assert.fail, policy);
-	const stream = routing.accountProvider("personal").streamSimple({ ...fallback, provider: "openai-codex:personal" }, normalizeContext({ messages: [] }), { apiKey: "fake-source" });
+	const routing = routingFixture(native, copilot, () => current, createQuotaLedger(join(getAgentDir(), "auth-scope"), assert.fail), assert.fail, policy);
+	const stream = routing.personal.streamSimple({ ...fallback, provider: "openai-codex:personal" }, normalizeContext({ messages: [] }), { apiKey: "fake-source" });
 	await started;
 	current = { ...current, cwd: outside };
 	release();
@@ -252,7 +179,7 @@ async function authScope(ctx: ExtensionContext) {
 	assert.match(result.errorMessage!, /restricted/);
 	assert.equal(calls, 0);
 	assert.equal(authCalls, 1);
-	const workProvider = routing.accountProvider("work");
+	const workProvider = routing.work;
 	for (const callback of [workProvider.stream, workProvider.streamSimple]) {
 		const denied = await callback({ ...fallback, provider: "openai-codex:personal" }, normalizeContext({ messages: [] }), { apiKey: "fake-bypass", headers: { authorization: "fake-bypass" } }).result();
 		assert.equal(denied.stopReason, "error");
@@ -267,7 +194,7 @@ async function authScope(ctx: ExtensionContext) {
 			async refresh(credential: Parameters<typeof oauth.refresh>[0]) { nativeCalls++; current = { ...current, cwd: outside }; return credential; },
 			async toAuth() { nativeCalls++; current = { ...current, cwd: outside }; return { apiKey: "fake-work" }; },
 		} } };
-		const guarded = createNativeRouting(wrapped, copilot, () => current, createQuotaLedger(join(getAgentDir(), `oauth-${operation}`), assert.fail), assert.fail, policy).accountProvider("work").auth.oauth!;
+		const guarded = routingFixture(wrapped, copilot, () => current, createQuotaLedger(join(getAgentDir(), `oauth-${operation}`), assert.fail), assert.fail, policy).work.auth.oauth!;
 		const credential: Parameters<typeof oauth.refresh>[0] = { type: "oauth", access: "fake", refresh: "fake", expires: Date.now() + 60000 };
 		if (operation === "refresh") assert.equal(await guarded.refresh(credential, new AbortController().signal), credential, "Allowed refresh returns the credential for native persistence despite scope loss");
 		await assert.rejects(() => guarded.toAuth(credential), /restricted/);
@@ -282,8 +209,8 @@ async function authScope(ctx: ExtensionContext) {
 		return Reflect.get(target, key, receiver);
 	} });
 	current = { ...current, modelRegistry: changedRegistry };
-	const changed = createNativeRouting(native, copilot, () => current, createQuotaLedger(join(getAgentDir(), "auth-root"), assert.fail), assert.fail, aliasPolicy);
-	const denied = await changed.accountProvider("personal").streamSimple({ ...fallback, provider: "openai-codex:personal" }, normalizeContext({ messages: [] })).result();
+	const changed = routingFixture(native, copilot, () => current, createQuotaLedger(join(getAgentDir(), "auth-root"), assert.fail), assert.fail, aliasPolicy);
+	const denied = await changed.personal.streamSimple({ ...fallback, provider: "openai-codex:personal" }, normalizeContext({ messages: [] })).result();
 	assert.equal(denied.stopReason, "error");
 	assert.match(denied.errorMessage!, /restricted/);
 	assert.equal(calls, 0, "canonical roots are rechecked after auth awaits");
@@ -308,7 +235,7 @@ async function directSource(ctx: ExtensionContext) {
 		assert.deepEqual(options.headers, { "source-only": "retained" });
 		assert.deepEqual(options.env, { SOURCE: "retained" });
 	};
-	const native: Provider = { ...codex,
+	const native: ReturnType<typeof openaiCodexProvider> = { ...codex,
 		stream(model, _transcript, options) {
 			inspect(model, options ?? {});
 			assert.equal(options && "reasoningEffort" in options && options.reasoningEffort, "high");
@@ -322,15 +249,16 @@ async function directSource(ctx: ExtensionContext) {
 		return Reflect.get(target, key, receiver);
 	} });
 	const policy = parsePolicy({ version: 1, accountOrder: ["personal"] });
-	const routing = createNativeRouting(native, copilot, () => ({ ...ctx, modelRegistry: registry }), createQuotaLedger(join(getAgentDir(), "direct-source"), assert.fail), assert.fail, policy);
-	const provider = routing.accountProvider("personal");
 	const options = { apiKey: "fake-source", headers: { "source-only": "retained" }, env: { SOURCE: "retained" } };
-	const raw = await provider.stream(source, normalizeContext({ messages: [] }), { ...options, reasoningEffort: "high", toolChoice: "required" }).result();
-	const simple = await provider.streamSimple(source, normalizeContext({ messages: [] }), { ...options, reasoning: "high" }).result();
-	for (const result of [raw, simple]) { assert.equal(result.stopReason, "stop"); assert.equal(result.model, source.id); }
-	assert.equal(calls, 2);
-	const invalid = await provider.streamSimple({ ...source, id: "" }, normalizeContext({ messages: [] }), options).result();
-	assert.equal(invalid.stopReason, "error", "rejected native input returns a terminal stream");
+	for (const current of [() => ({ ...ctx, modelRegistry: registry }), () => undefined]) {
+		const { personal: provider } = routingFixture(native, copilot, current, createQuotaLedger(join(getAgentDir(), "direct-source"), assert.fail), assert.fail, policy);
+		const raw = await provider.stream(source, normalizeContext({ messages: [] }), { ...options, reasoningEffort: "high", toolChoice: "required" }).result();
+		const simple = await provider.streamSimple(source, normalizeContext({ messages: [] }), { ...options, reasoning: "high" }).result();
+		for (const result of [raw, simple]) { assert.equal(result.stopReason, "stop"); assert.equal(result.model, source.id); }
+		const invalid = await provider.streamSimple({ ...source, id: "" }, normalizeContext({ messages: [] }), options).result();
+		assert.equal(invalid.stopReason, "error", "rejected native input returns a terminal stream");
+	}
+	assert.equal(calls, 4);
 }
 
 async function attemptTransition(ctx: ExtensionContext) {
@@ -339,7 +267,7 @@ async function attemptTransition(ctx: ExtensionContext) {
 	const last = mode === "last-internal-quota";
 	const policy = parsePolicy({ version: 1, accountOrder: last ? ["personal"] : ["work", "personal"], work: { roots: [root] } });
 	const calls: string[] = [];
-	const observed: DirectQuotaProof[] = [];
+	const observed: DirectObservation[] = [];
 	const quota = createQuotaLedger(join(getAgentDir(), "attempt-quota"), assert.fail);
 	const ledger: QuotaLedger = {
 		snapshot: (candidates, now) => quota.snapshot(candidates, now),
@@ -387,6 +315,9 @@ async function attemptTransition(ctx: ExtensionContext) {
 				if (mode === "raw-usage" || mode === "mutated-usage") await options.onProviderStreamEvent?.(usageEvent, model);
 				else {
 					if (mode === "raw-output") await options.onProviderStreamEvent?.({ response: { output: [{ type: "reasoning", encrypted_content: "opaque" }] } }, model);
+					if (mode === "raw-text-delta" || mode === "mutated-text-delta") await options.onProviderStreamEvent?.({ type: "response.output_text.delta", delta: "received output" }, model);
+					if (mode === "raw-output-item") await options.onProviderStreamEvent?.({ type: "response.output_item.added", item: { type: "reasoning", encrypted_content: "opaque" } }, model);
+					if (mode === "raw-cost") await options.onProviderStreamEvent?.({ response: { usage: { cost: { total: 0.1 } } } }, model);
 					await options.onProviderStreamEvent?.(quotaEvent, model);
 				}
 				if (mode === "hook-after-quota") await options.onResponse?.({ status: 429, headers: {} }, model);
@@ -404,13 +335,14 @@ async function attemptTransition(ctx: ExtensionContext) {
 		})().catch(error => { output.push({ type: "error", reason: "error", error: { ...message(model), errorMessage: String(error) } }); output.end(); });
 		return output;
 	};
-	const routing = createNativeRouting({ ...codex, streamSimple }, copilot, () => ({ ...registryContext(ctx), cwd }), ledger, assert.fail, policy);
+	const routing = routingFixture({ ...codex, streamSimple }, copilot, () => ({ ...registryContext(ctx), cwd }), ledger, assert.fail, policy);
 	const account = last || mode === "cleanup-caller-abort" ? "personal" : "work";
-	const stream = routing.accountProvider(account).streamSimple({ ...fallback, provider: `openai-codex:${account}` }, normalizeContext({ messages: [] }), {
+	const stream = routing[account].streamSimple({ ...fallback, provider: `openai-codex:${account}` }, normalizeContext({ messages: [] }), {
 		apiKey: "fake-source", signal: caller.signal,
 		maxRetries: ["internal-quota", "last-internal-quota", "caller-and-internal"].includes(mode) ? 3 : 0,
 		onResponse() { if (mode === "hook-before-quota" || mode === "hook-after-quota") throw new Error("fixture response hook failed"); },
-		onProviderStreamEvent() {
+		onProviderStreamEvent(event) {
+			if (mode === "mutated-text-delta" && event && typeof event === "object") Object.assign(event, { type: "response.created", delta: "" });
 			if (mode === "mutated-intro") quotaEvent.error.code = "usage_limit_reached";
 			if (mode === "mutated-quota") quotaEvent.error.code = "rate_limit_exceeded";
 			if (mode === "mutated-usage") usageEvent.response.usage.input_tokens = 0;
@@ -430,10 +362,10 @@ async function attemptTransition(ctx: ExtensionContext) {
 		assert.equal(result.content[0].type === "text" && result.content[0].text, mode === "text" ? "ab" : "a");
 	}
 	for (const proof of observed) {
-		const snapshot = quota.snapshot([proof.target], Date.now());
-		assert.equal(proof.target.service === "codex" ? snapshot[proof.target.account].kind : snapshot.review.kind, "cooling", "quota persists independently of retry permission");
+		const snapshot = quota.snapshot([personal, work, review], Date.now());
+		assert.equal(snapshot.get(proof.account.budget)!.kind, "cooling", "quota persists independently of retry permission");
 	}
-	return { calls, stopReason: result.stopReason, provider: result.provider, observations: observed.map(proof => proof.target), callerAborted: caller.signal.aborted, usage: result.usage };
+	return { calls, stopReason: result.stopReason, provider: result.provider, observations: observed.map(proof => proof.account), callerAborted: caller.signal.aborted, usage: result.usage };
 }
 
 export default function (pi: ExtensionAPI) {

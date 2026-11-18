@@ -1,88 +1,78 @@
 import type { ApiStreamOptions, Model, Provider, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
-import type { Policy, ReviewBinding } from "../policy.ts";
-import type { QuotaLedger, SharedCooldown } from "../quota.ts";
-import { planCodex, planReview } from "../routing.ts";
-import type { AttemptOutcome, DirectQuotaProof, NativeRouting, RetryableQuotaFailure, RoutePlan } from "../routing.ts";
-import { budgetOf } from "../targets.ts";
-import type { AccountOrder, BudgetView, CodexModelId, CodexTarget, CopilotModelId } from "../targets.ts";
+import type { Policy, Profile } from "../policy.ts";
+import type { QuotaLedger } from "../quota.ts";
+import type { DirectObservation } from "../quota-protocol.ts";
+import { nativeProviders } from "../native-guards.ts";
+import { COPILOT_ACCOUNT, PERSONAL_ACCOUNT, WORK_ACCOUNT } from "../targets.ts";
+import type { AccountOrder, CodexModelId, CopilotModelId, ModelTarget, ProviderAccount } from "../targets.ts";
+import extension from "../index.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 declare const policy: Policy;
-declare const codex: CodexModelId;
-declare const anotherCodex: CodexModelId;
-declare const copilot: CopilotModelId;
-declare const binding: ReviewBinding;
-declare const budgets: BudgetView;
-declare const plan: RoutePlan;
-declare const codexPlan: RoutePlan<CodexTarget>;
-declare const proof: DirectQuotaProof;
-declare const retry: RetryableQuotaFailure;
+declare const codexId: CodexModelId;
+declare const copilotId: CopilotModelId;
+declare const observation: DirectObservation;
 declare const ledger: QuotaLedger;
-declare const diskObservation: SharedCooldown;
-declare const native: NativeRouting;
-declare const nativeCodex: Model<"openai-codex-responses">;
-declare const context: TranscriptContext;
-declare const rawOptions: ApiStreamOptions<"openai-codex-responses">;
-declare const simpleOptions: SimpleStreamOptions;
+declare const model: Model<"openai-codex-responses">;
+declare const anthropic: Model<"anthropic-messages">;
+declare const transcript: TranscriptContext;
+declare const pi: ExtensionAPI;
+const { codex, copilot } = nativeProviders();
+const raw: Provider<"openai-codex-responses">["stream"] = codex.stream;
+const simple: Provider["streamSimple"] = copilot.streamSimple;
+raw(model, transcript, { reasoningEffort: "high", toolChoice: "required" });
+simple(anthropic, transcript, { reasoning: "high", toolChoice: "auto" });
+copilot.stream(anthropic, transcript, { thinkingEnabled: true });
+ledger.observeDirect(observation);
+const workTarget: ModelTarget = { account: WORK_ACCOUNT, modelId: codexId };
+const copilotTarget: ModelTarget = { account: COPILOT_ACCOUNT, modelId: copilotId };
+const personal: Profile = { name: "personal", accounts: [PERSONAL_ACCOUNT, COPILOT_ACCOUNT] };
+const work: Profile = { name: "work", accounts: [WORK_ACCOUNT, COPILOT_ACCOUNT], criteria: { githubOwners: [], roots: ["/example/work"] } };
+const rawOptions: ApiStreamOptions<"openai-codex-responses"> = { reasoningEffort: "high" };
+const simpleOptions: SimpleStreamOptions = { reasoning: "high" };
+extension(pi);
 
-const personal: CodexTarget<"personal"> = { service: "codex", account: "personal", model: codex };
-const work: CodexTarget<"work"> = { service: "codex", account: "work", model: codex };
-const workBudget: Readonly<{ service: "codex"; account: "work" }> = budgetOf(work);
-planCodex(policy, codex, "eligible", budgets);
-planReview(policy, "eligible", budgets);
-ledger.observeDirect(proof);
-const result: AttemptOutcome = retry;
-const generalPlan: RoutePlan = codexPlan;
-const provider: Provider = native.accountProvider("work");
-const raw: Provider["stream"] = provider.stream;
-const simple: Provider["streamSimple"] = provider.streamSimple;
-raw(nativeCodex, context, rawOptions);
-raw(nativeCodex, context, { reasoningEffort: "high", toolChoice: "required" });
-simple(nativeCodex, context, simpleOptions);
-if (native.reviewRegistration.kind === "ready") {
-	const reviewSimple: Provider["streamSimple"] = native.reviewRegistration.provider.streamSimple;
-	reviewSimple(nativeCodex, context, { reasoning: "high", toolChoice: "auto" });
-	// @ts-expect-error Review accepts provider-neutral options, not Codex raw options.
-	reviewSimple(nativeCodex, context, { reasoningEffort: "high" });
-}
-// @ts-expect-error A foreign policy's binding is not an independent planning input.
-planReview(policy, binding, "eligible", budgets);
-// @ts-expect-error A plan that may contain Copilot cannot enter Codex-specific raw execution.
-const rawPlan: RoutePlan<CodexTarget> = plan;
-// @ts-expect-error Copilot IDs cannot identify a Codex target.
-const mismatchedFamily: CodexTarget = { service: "codex", account: "work", model: copilot };
-// @ts-expect-error Raw strings have no model namespace provenance.
-const unboundModel: CodexModelId = "some-native-id";
-// @ts-expect-error Work's budget is derived, not independently paired.
-const mismatchedBudget: Readonly<{ service: "codex"; account: "personal" }> = budgetOf(work);
-// @ts-expect-error No function accepts an independently supplied quota key.
-budgetOf(work, "personal-codex");
-// @ts-expect-error Policy rejects a work-only order.
+// @ts-expect-error WRONG_BUDGET
+const mismatchedAccount: ProviderAccount = { credential: "github-copilot", budget: "work-codex" };
+// @ts-expect-error CODEX_NAMESPACE
+const foreignCodex: ModelTarget = { account: WORK_ACCOUNT, modelId: copilotId };
+// @ts-expect-error COPILOT_NAMESPACE
+const foreignCopilot: ModelTarget = { account: COPILOT_ACCOUNT, modelId: codexId };
+// @ts-expect-error WORK_MEMBERSHIP
+const workInPersonal: Profile = { name: "personal", accounts: [WORK_ACCOUNT] };
+// @ts-expect-error PERSONAL_MEMBERSHIP
+const personalInWork: Profile = { name: "work", accounts: [PERSONAL_ACCOUNT], criteria: { githubOwners: [], roots: ["/example/work"] } };
+// @ts-expect-error WORK_CRITERIA
+const noCriteria: Profile = { name: "work", accounts: [WORK_ACCOUNT] };
+// @ts-expect-error CODEX_ORDER
+const copilotOrder: Policy = { profiles: [], codexOrder: [COPILOT_ACCOUNT] };
+// @ts-expect-error WORK_ONLY
 const workOnly: AccountOrder = ["work"];
-// @ts-expect-error Review binding cannot be reconstructed with another fallback.
-const reboundReview: ReviewBinding = { ...binding, fallback: anotherCodex };
-// @ts-expect-error Copying a policy loses private construction authority.
-const replacedOrder: Policy = { ...policy, accountOrder: ["work", "personal"] };
-// @ts-expect-error Copying a plan loses private construction authority.
-const duplicateTargets: RoutePlan = { ...plan, targets: [personal, personal] };
-// @ts-expect-error Direct evidence cannot be retargeted by reconstruction.
-const retargetedProof: DirectQuotaProof = { ...proof, target: work };
-// @ts-expect-error Shared observations are not direct provider evidence.
-ledger.observeDirect(diskObservation);
-// @ts-expect-error An independent timestamp cannot establish provider evidence.
+// @ts-expect-error RAW_STRING_NAMESPACE
+const rawId: CodexModelId = "unbound-native-id";
+// @ts-expect-error RAW_CODEX_OPTIONS
+raw(model, transcript, { thinkingEnabled: true });
+// @ts-expect-error RAW_CODEX_MODEL
+raw(anthropic, transcript, { reasoningEffort: "high" });
+// @ts-expect-error RAW_COPILOT_OPTIONS
+copilot.stream(anthropic, transcript, { reasoningEffort: "high" });
+// @ts-expect-error SIMPLE_RAW_OPTIONS
+simple(anthropic, transcript, { reasoningEffort: "high" });
+// @ts-expect-error SIMPLE_TOOL_CHOICE
+simple(anthropic, transcript, { toolChoice: "required" });
+// @ts-expect-error FORGED_OBSERVATION
+ledger.observeDirect({ account: WORK_ACCOUNT, until: Date.now() });
+// @ts-expect-error RETARGETED_OBSERVATION
+ledger.observeDirect({ ...observation, account: WORK_ACCOUNT });
+// @ts-expect-error REWRITTEN_OBSERVATION
+ledger.observeDirect({ ...observation, until: observation.until + 1000 });
+// @ts-expect-error IMMUTABLE_OBSERVATION
+observation.until = Date.now();
+// @ts-expect-error SCALAR_OBSERVATION
 ledger.observeDirect(Date.now());
-// @ts-expect-error Public fields cannot manufacture a retry outcome.
-const manufacturedRetry: RetryableQuotaFailure = { kind: "quota-before-output", proof };
-// @ts-expect-error Copying a retry outcome loses private settlement authority.
-const copiedRetry: RetryableQuotaFailure = { ...retry };
-// @ts-expect-error Arbitrary error labels cannot authorize advancement.
-const genericErrorRetry: AttemptOutcome = { kind: "quota-before-output", proof };
-// @ts-expect-error The private attempt owner is not exported.
-import type { Attempt } from "../routing.ts";
-// @ts-expect-error There is no independently injectable settlement API.
-import { finish } from "../routing.ts";
-// @ts-expect-error Native callbacks replace the boolean-mode routing API.
-native.stream(nativeCodex, context, simpleOptions, true, true);
-// @ts-expect-error The ledger cannot accept an independently paired storage key and reset.
+// @ts-expect-error LEGACY_OBSERVE
 ledger.observe("work-codex", Date.now());
-// @ts-expect-error Neutral callbacks do not accept raw-only Codex tool choices.
-simple(nativeCodex, context, { toolChoice: "required" });
+// @ts-expect-error FORGED_INGRESS
+extension(pi, { account: WORK_ACCOUNT, apiKey: "fake" });
+// @ts-expect-error PRIVATE_ATTEMPT
+import { finish } from "../routing.ts";

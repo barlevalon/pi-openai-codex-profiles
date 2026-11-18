@@ -1,6 +1,6 @@
 # Pi OpenAI Codex Profiles
 
-Keep separate `personal` and `work` OpenAI Codex OAuth identities in Pi. One profile-local JSON file controls work eligibility, account priority, and optional review targets. Without that file, routing is personal-only and no review model is registered. Requires Pi 1.5.2's native provider and virtual-model APIs.
+Keep separate `personal` and `work` OpenAI Codex OAuth identities in Pi. A profile-local policy assigns provider accounts to personal or repository-restricted work membership. Each account keeps its native credential slot and independent quota history. Without a valid policy, only personal Codex is authorized. Managed Copilot is denied and no review model is advertised. Requires Pi 1.5.2's native provider and virtual-model APIs.
 
 ## Install and update
 
@@ -26,6 +26,7 @@ A neutral example follows. Replace both model placeholders with exact native cha
 {
 	"version": 1,
 	"accountOrder": ["work", "personal"],
+	"copilotProfile": "work",
 	"work": {
 		"githubOwners": ["example-org"],
 		"roots": ["~/projects/workspaces"]
@@ -49,13 +50,16 @@ The minimal policy is:
 ### Policy fields
 
 - `version` is required and must equal `1`.
-- `accountOrder` is required. Its only valid values are `["personal"]`, `["personal", "work"]`, and `["work", "personal"]`.
-- `work` has optional `githubOwners` and `roots` arrays. Omitted arrays mean `[]`. An order containing `work` requires at least one valid owner or root. Selectors do not enable work unless the order contains it.
+- `accountOrder` is required. Its only valid values are `["personal"]`, `["personal", "work"]`, and `["work", "personal"]`. It enrolls and orders Codex accounts, not a shared work budget.
+- `copilotProfile` optionally assigns the existing `github-copilot` credential to `"personal"` or `"work"`. The assignment covers ordinary chat, classifiers, and review routing. Omission denies managed Copilot. It never implies personal ownership.
+- `work` has optional `githubOwners` and `roots` arrays. Omitted arrays mean `[]`. Any work-owned account requires at least one valid owner or root. This includes work Copilot with a personal-only Codex order. Selectors alone do not enroll Work Codex.
 - `githubOwners` contains valid GitHub owners, matched case-insensitively. Owner names cannot contain consecutive hyphens or start or end with a hyphen.
 - `roots` contains absolute paths or paths beginning with `~/`. The latter resolve against the home directory at load time. Other characters are literal. Environment and command interpolation are not supported.
 - `review`, when present, requires exactly `copilotModel` and `codexFallbackModel`. Both must be nonblank exact native chat model IDs without provider prefixes. There are no default models or fallback families.
 
-Unknown fields, invalid types, invalid selectors, and malformed JSON invalidate the entire policy. Credential, header, and endpoint fields are not supported. Symlinks, nonregular files, unreadable files, and files larger than 64 KiB also fail closed. A generic warning reports personal-only routing with review disabled. A missing file is silent. Core aliases and work guards remain registered after failure. Policy snapshots are immutable until `/reload` or a new extension instance.
+Unknown fields, invalid types, invalid selectors, and malformed JSON invalidate the entire policy. Credential, header, and endpoint fields are not supported. Symlinks, nonregular files, unreadable files, and files larger than 64 KiB also fail closed. A generic warning reports personal-only routing with review disabled. A missing file is silent. Both Codex aliases and guarded Copilot remain registered after failure. Their complete native catalogs remain inspectable. Availability filters do not grant permission. Policy snapshots are immutable until `/reload` or a new extension instance.
+
+Existing policies that used Copilot must add `copilotProfile` explicitly. Use `"work"` with nonempty work selectors for a work-owned credential, or `"personal"` for a personal credential. Reload after this input migration. No credentials move between native slots.
 
 ### Work eligibility
 
@@ -66,7 +70,9 @@ A repository qualifies through either of these checks:
 
 The nearest actual Git repository owns the decision. A root container itself, a directory prefix, or a symlink into an unrelated repository does not qualify through the root check. Missing roots grant nothing. Roots are canonicalized again at every guard. Git discovery scrubs `GIT_*` variables, disables config includes for origin lookup, and bounds command time and output.
 
-Routing uses Pi's current `ctx.cwd`, not a shell tool's working directory. Eligible repositories use the configured account order. Other, unknown, and nonrepository locations use personal only. Known cooldowns remove accounts from the plan. If all configured targets are cooling down, the request fails before authentication.
+Routing uses Pi's current `ctx.cwd`, not a shell tool's working directory or an ambient startup directory. Eligible repositories use the configured Codex order. Other, unknown, and nonrepository locations use personal Codex only. A work-owned Copilot credential is unavailable there. Work requires a bound Pi context. A matching direct personal Codex source can be reused without a context or registry lookup.
+
+Session start, model selection, and session-tree changes bind the context and await native offline availability refresh. Cached availability remains provisional. Auth, fetch, and callback boundaries recheck current membership. Known cooldowns remove eligible routed targets. If all targets are cooling down, the request fails before authentication.
 
 ## Use native account logins
 
@@ -80,7 +86,9 @@ Login remains native account management and is not restricted by repository scop
 
 Selecting either alias normalizes the session to `codex-policy/<requested-model-id>` before authentication. Every native Codex chat ID is available. The selected model ID and thinking level stay unchanged. Assistant messages record the physical account that answered.
 
-Work OAuth refresh, auth derivation, and sends require a bound Pi context, work enabled in `accountOrder`, and an eligible repository. Direct work streams outside that scope fail, including calls with explicit credentials. Missing or broken target authentication is a setup error, not quota exhaustion.
+Work auth and sends require current membership and an eligible repository. Direct work streams outside that scope fail, including raw calls, stale model objects, forged provider labels, and explicit credentials. Missing or broken target authentication is a setup error, not quota exhaustion.
+
+Ownership authorizes OAuth refresh at its start. Once a refresh starts, the rotated result returns to native Pi for atomic persistence, even if scope or caller cancellation changes. Auth conversion and subsequent use remain guarded. This package does not persist credentials.
 
 ## Use an explicitly configured review
 
@@ -89,13 +97,15 @@ Work OAuth refresh, auth derivation, and sends require a bound Pi context, work 
 /model profile-review/<configured-copilot-model-id>
 ```
 
-The derived selection tries exactly the configured native Copilot chat model. Confirmed Copilot quota exhaustion falls back to exactly the configured Codex model under the repository account policy. No review selection exists without a valid `review` policy.
+The derived selection tries exactly the configured native Copilot chat model. Its account must belong to an eligible profile before any budget read or physical authentication. A work review is unavailable outside work scope, not silently converted to a personal reviewer or reported as quota exhaustion. The pstack role selector rejects an unavailable exact configured model. Choosing a personal reviewer remains explicit caller behavior.
+
+Confirmed Copilot quota exhaustion falls back to exactly the configured Codex model under the repository account policy. No review model is advertised without a valid `review` policy.
 
 The entry advertises shared thinking and input capabilities and the smaller context and output limits. Targets must have equal input limits after normalizing Pi's image-resize defaults of 2000 by 2000 pixels, 4.5 MiB encoded, and JPEG quality 80. Missing or incompatible native targets leave an error-only selection at the configured ID. They do not break personal core routing or select a neighboring model. Runtime capability checks run before physical target auth, including direct and stale review streams.
 
 A notice reports use of the configured Codex fallback without assuming model-family diversity. JSON and print final answers also include the notice, including length termination and a Codex tool-use response followed by a Copilot final answer in the same prompt.
 
-Ordinary `github-copilot` selections remain unchanged. The review provider accepts provider-neutral `streamSimple` calls and rejects API-specific `stream` calls. This package does not modify review-role settings in other extensions.
+Ordinary `github-copilot` calls add ownership checks to native raw, simple, classifier, and auth operations. They retain native options, retries, signals, immediate events, OAuth model filtering, and classifier results. They do not enter quota routing, buffer starts, or receive internal quota cancellation. The review provider accepts provider-neutral `streamSimple` calls and rejects API-specific `stream` calls. This package does not modify review-role settings or replace the native footer.
 
 ## Quota and stream rules
 
@@ -103,7 +113,11 @@ Both Codex accounts require structured `usage_limit_reached` in an error's code 
 
 Generic 429 responses, authentication failures, network errors, context errors, and English quota messages do not authorize fallback. Error-body inspection is limited to 16 KiB and one second and respects cancellation. Each target in the finite plan is attempted at most once. There are no implicit extra targets.
 
-Failed attempts remain hidden only before content or usage commits the stream. Text, thinking, tool calls, usage, caller aborts, callback failures, and malformed streams prevent replay. Empty success remains success. Caller transport and semantic options stay intact. Account switches resolve native target auth again and discard source keys, headers, and environment. The captured native transports own streaming and physical attribution.
+One request-local retry owner attempts each routed target at most once. Failed attempts remain hidden only before content or usage commits the stream. Text, thinking, tool calls, usage, caller aborts, callback failures, scope loss, and malformed streams prevent replay. Iterator cleanup finishes before retry or cancellation classification. Empty success remains success.
+
+Returned HTTP responses and raw provider events record quota evidence before post-receipt scope checks. Output and usage commit before caller hooks can mutate events. Observations persist even when replay is forbidden. Only a clean structured quota error before output can advance.
+
+Caller transport and semantic options stay intact. A matching first direct Codex source preserves its endpoint, model headers, request headers, key, and environment without catalog membership. Only an account switch resolves the exact destination model and native auth, discarding source overrides. Captured native operations own streaming and physical attribution.
 
 Quota observations live beneath `getAgentDir()/codex-routing`. Independent `work-codex`, `personal-codex`, and `copilot-review` keys use the same version-1 file schema. Each observation is an atomically renamed file with mode `0600` in a directory created with mode `0700`. Processes merge the maximum reset per key. Only version, key, and reset timestamp are stored. Codex epoch-second `resets_at` and HTTP `Retry-After` seconds or dates determine resets. Missing or invalid resets use a 15-minute cooldown.
 
@@ -113,8 +127,12 @@ This extension is an account-routing policy, not a sandbox. `--no-extensions` by
 
 ## Test
 
-Run `npm test` with Node.js 22.19 or later and Pi 1.5.2 on PATH. Tests install the package into temporary profiles, create real Git fixtures, and merge cooldown observations across independent processes.
+Run `npm test` with Node.js 22.19 or later and Pi 1.5.2 on PATH. The independent scope suite also needs resolvable SDK packages. Set `PROFILE_SCOPE_SDK` to a directory containing `node_modules/@earendil-works` when the SDK is not installed beside this checkout. Tests install the package into temporary profiles, create real Git fixtures, and merge cooldown observations across independent processes.
 
 Host tests use fake credentials, temporary `PI_CODING_AGENT_DIR` profiles, `--offline --no-mcp --no-context-files`, local response fixtures, and a loopback HTTP server. They cover defaults, strict parsing, policy isolation and reloads, scope guards, both account priorities, independent budgets, review capabilities, auth isolation, stream commitment, prompt-level notices, and native compaction. No saved credentials or upstream model requests are used.
 
 Set `PI_PACKAGE_TEST_SOURCE` to a Git source to check an installed revision instead of the local directory.
+
+## Implementation reference
+
+`policy.ts` normalizes copied, frozen profile membership. `targets.ts` correlates native credentials and budgets and performs pure eligibility and candidate selection. `scope.ts` inspects Git provenance. `native-guards.ts` preserves native auth, availability, and direct-operation contracts. `routing.ts` captures ingress identity and owns routed attempts through one progress union. `stream-evidence.ts` inspects output commitment. `quota-protocol.ts` decodes bounded wire evidence into observations with private payloads. `quota.ts` retains local and shared storage provenance and immutable max-merge files.

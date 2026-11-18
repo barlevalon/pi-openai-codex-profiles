@@ -63,7 +63,7 @@ for (const mode of ["json", "print"]) for (const finish of ["copilot", "length"]
   await once(server, "listening");
   t.after(() => { server.closeAllConnections(); server.close(); rmSync(directory, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${server.address().port}`;
-  writeFileSync(join(directory, "codex-routing-policy.json"), JSON.stringify({ version: 1, accountOrder: ["personal"], review: { copilotModel: "claude-sonnet-5.5", codexFallbackModel: "gpt-5.6-luna" } }));
+  writeFileSync(join(directory, "codex-routing-policy.json"), JSON.stringify({ version: 1, copilotProfile: "personal", accountOrder: ["personal"], review: { copilotModel: "claude-sonnet-5.5", codexFallbackModel: "gpt-5.6-luna" } }));
   writeFileSync(join(directory, "auth.json"), JSON.stringify({
     "openai-codex:personal": { type: "oauth", access: token, refresh: "fake", expires: Date.now() + 86400000 },
     "github-copilot": { type: "api_key", key: "fake-copilot" },

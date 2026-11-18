@@ -24,6 +24,10 @@ for (const [mode, count, ending, evidence] of [
   ["provider-cost-marker", 1, "error", 1],
   ["raw-usage", 1, "error", 1],
   ["raw-output", 1, "error", 1],
+  ["raw-text-delta", 1, "error", 1],
+  ["mutated-text-delta", 1, "error", 1],
+  ["raw-output-item", 1, "error", 1],
+  ["raw-cost", 1, "error", 1],
   ["mutated-usage", 1, "error", 1],
   ["mutated-intro", 1, "error", 0],
   ["mutated-quota", 2, "stop", 1],
@@ -32,7 +36,7 @@ for (const [mode, count, ending, evidence] of [
   ["event-hook", 1, "error", 1],
   ["missing-terminal", 1, "error", 0],
   ["missing-after-output", 1, "error", 0],
-]) test(`attempt settlement ${mode}`, { timeout: 30000 }, async t => {
+]) test(`attempt outcome ${mode}`, { timeout: 30000 }, async t => {
   const directory = mkdtempSync(join(tmpdir(), "codex-attempt-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const result = await nativeProbe("attempt", directory, directory, { DOMAIN_MODE: mode });

@@ -5,10 +5,10 @@ import { fileURLToPath } from "node:url";
 
 const probe = fileURLToPath(new URL("./domain-probe.ts", import.meta.url));
 
-export async function nativeProbe(kind, directory, cwd = directory, extra = {}) {
+export async function nativeProbe(kind, directory, cwd = directory, extra = {}, probePath = probe) {
   const env = { ...process.env, ...extra, PI_CODING_AGENT_DIR: directory, DOMAIN_CASE: kind };
   for (const name of Object.keys(env)) if (/^(OPENAI|ANTHROPIC|COPILOT|GITHUB_TOKEN|GH_TOKEN)/.test(name)) delete env[name];
-  const child = spawn("pi", ["--offline", "--no-mcp", "--no-context-files", "--no-approve", "--mode", "rpc", "--no-session", "-e", probe], {
+  const child = spawn("pi", ["--offline", "--no-mcp", "--no-context-files", "--no-approve", "--mode", "rpc", "--no-session", "-e", probePath], {
     cwd, env, timeout: 20000, stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "";

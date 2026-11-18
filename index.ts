@@ -1,4 +1,4 @@
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { nativeProviders } from "./native-guards.ts";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { createQuotaLedger } from "./quota.ts";
@@ -7,9 +7,7 @@ import { loadPolicy } from "./policy.ts";
 import { reviewContribution, type Contribution } from "./review.ts";
 
 export default function (pi: ExtensionAPI) {
-	const builtins = builtinProviders();
-	const codex = builtins.find(({ id }) => id === "openai-codex")!;
-	const copilot = builtins.find(({ id }) => id === "github-copilot")!;
+	const { codex, copilot } = nativeProviders();
 	let current: ExtensionContext | undefined;
 	const notice = (message: string) => {
 		if (current?.hasUI) current.ui.notify(message, "warning");
@@ -17,14 +15,11 @@ export default function (pi: ExtensionAPI) {
 	};
 	const policy = loadPolicy(getAgentDir(), notice);
 	const routing = createNativeRouting(codex, copilot, () => current, createQuotaLedger(join(getAgentDir(), "codex-routing"), notice), notice, policy);
-	pi.registerProvider(routing.accountProvider("personal"));
-	pi.registerProvider(routing.accountProvider("work"));
-	for (const model of codex.getModels()) pi.registerVirtualModel(routing.codexSelection(model));
-	const review = routing.reviewRegistration;
-	if (review.kind === "ready") pi.registerProvider(review.provider);
-	else if (review.kind === "unavailable") pi.registerVirtualModel(review.selection);
+	for (const provider of routing.providers) pi.registerProvider(provider);
+	for (const selection of routing.selections) pi.registerVirtualModel(selection);
 	async function normalize(ctx: ExtensionContext) {
 		current = ctx;
+		await ctx.modelRegistry.refresh({ allowNetwork: false });
 		if (ctx.model?.provider !== PERSONAL && ctx.model?.provider !== WORK) return;
 		const model = ctx.modelRegistry.find(POLICY, ctx.model.id);
 		if (!model) throw new Error(`Missing Codex policy model: ${ctx.model.id}`);
