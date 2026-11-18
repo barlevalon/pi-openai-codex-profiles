@@ -269,8 +269,9 @@ async function authScope(ctx: ExtensionContext) {
 		} } };
 		const guarded = createNativeRouting(wrapped, copilot, () => current, createQuotaLedger(join(getAgentDir(), `oauth-${operation}`), assert.fail), assert.fail, policy).accountProvider("work").auth.oauth!;
 		const credential: Parameters<typeof oauth.refresh>[0] = { type: "oauth", access: "fake", refresh: "fake", expires: Date.now() + 60000 };
-		await assert.rejects(() => operation === "refresh" ? guarded.refresh(credential, new AbortController().signal) : guarded.toAuth(credential), /restricted/);
-		assert.equal(nativeCalls, 1, `${operation} rechecks after the native await`);
+		if (operation === "refresh") assert.equal(await guarded.refresh(credential, new AbortController().signal), credential, "Allowed refresh returns the credential for native persistence despite scope loss");
+		await assert.rejects(() => guarded.toAuth(credential), /restricted/);
+		assert.equal(nativeCalls, 1, `${operation} cannot authorize work auth after scope loss`);
 	}
 	const alias = join(getAgentDir(), "authorized-root");
 	symlinkSync(root, alias);

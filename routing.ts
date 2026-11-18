@@ -363,7 +363,8 @@ export function createNativeRouting(codex: Provider, copilot: Provider, current:
 			...(codex.getAllModels ? { getAllModels: () => codex.getAllModels!().map(model => ({ ...model, provider: id })) } : {}),
 			auth: { ...codex.auth, oauth: account === "work" ? {
 				...oauth,
-				async refresh(...args) { guardWork(); const result = await oauth.refresh(...args); guardWork(); return result; },
+				// Scope authorizes refresh start. Native Pi must persist any rotated token under its lock.
+				async refresh(...args) { guardWork(); return oauth.refresh(...args); },
 				async toAuth(...args) { guardWork(); const result = await oauth.toAuth(...args); guardWork(); return result; },
 			} : oauth },
 			stream, streamSimple,
