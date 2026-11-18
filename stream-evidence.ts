@@ -20,7 +20,7 @@ function positiveUsage(value: unknown): boolean {
 }
 
 const RESPONSE_OUTPUT_EVENTS = new Set([
-	"response.output_item.added", "response.content_part.added", "response.output_text.delta",
+	"response.output_item.added", "response.output_item.done", "response.content_part.added", "response.output_text.delta",
 	"response.reasoning_text.delta", "response.reasoning_summary_part.added",
 	"response.reasoning_summary_text.delta", "response.function_call_arguments.delta",
 ]);
