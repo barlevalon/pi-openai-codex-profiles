@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
-import { githubOwner, type WorkScope } from "./policy.ts";
+import { asciiAlphanumeric, githubOwner } from "./identifiers.ts";
+import type { WorkScope } from "./policy.ts";
 
 export type RepoScope = "eligible" | "other" | "unknown";
 type Git = (directory: string, args: string[]) => string;
@@ -20,15 +21,18 @@ function githubRepositoryOwner(url: string): string | undefined {
 	if (!prefix) return;
 	const [owner, repository, extra] = url.slice(prefix.length).split("/");
 	if (!owner || !repository || extra !== undefined) return;
-	if (owner !== owner.trim() || !githubOwner(owner)) return;
-	if (/[^A-Za-z0-9_.-]/.test(repository)) return;
-	const name = repository.replace(/\.git$/, "");
+	if (!githubOwner(owner)) return;
+	if (![...repository].every(character => asciiAlphanumeric(character) || "_.-".includes(character))) return;
+	const name = repository.endsWith(".git") ? repository.slice(0, -".git".length) : repository;
 	if (!name || name === "." || name === "..") return;
 	return owner.toLowerCase();
 }
 
 function localOrigins(directory: string, git: Git): string[] {
-	try { return git(directory, ["config", "--local", "--no-includes", "--get-all", "remote.origin.url"]).trim().split("\n"); }
+	try {
+		const output = git(directory, ["config", "--null", "--local", "--no-includes", "--get-all", "remote.origin.url"]);
+		return output.slice(0, -1).split("\0");
+	}
 	catch (error) {
 		if ((error as { status?: number }).status === 1) return [];
 		throw error;

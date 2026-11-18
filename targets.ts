@@ -1,3 +1,4 @@
+import { unpaddedText } from "./identifiers.ts";
 import type { Policy } from "./policy.ts";
 import type { RepoScope } from "./scope.ts";
 
@@ -24,12 +25,12 @@ export type Selection = Readonly<{ kind: "selected"; targets: Candidates }>
 	| Readonly<{ kind: "unavailable"; reason: "all-cooling" | "budget-unreadable" }>;
 
 export function codexModelId(value: string): CodexModelId {
-	if (!value || value !== value.trim() || /[\x00-\x1f\x7f]/.test(value)) throw new Error("Invalid Codex model ID");
+	if (!unpaddedText(value)) throw new Error("Invalid Codex model ID");
 	return value as CodexModelId;
 }
 
 export function copilotModelId(value: string): CopilotModelId {
-	if (!value || value !== value.trim() || /[\x00-\x1f\x7f]/.test(value)) throw new Error("Invalid Copilot model ID");
+	if (!unpaddedText(value)) throw new Error("Invalid Copilot model ID");
 	return value as CopilotModelId;
 }
 
