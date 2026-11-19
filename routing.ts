@@ -101,8 +101,9 @@ export function createNativeRouting(
 		if (eligibility.kind !== "eligible") return;
 		const primary = registry.find(COPILOT_ACCOUNT.credential, derivedReview.id);
 		for (const target of eligibility.targets) {
-			if (target.account.credential !== COPILOT_ACCOUNT.credential
-				&& !reviewModel(policy.review, primary, registry.find(target.account.credential, target.modelId), advertised)) return;
+			if (target.account.credential === COPILOT_ACCOUNT.credential) continue;
+			const fallback = registry.find(target.account.credential, target.modelId);
+			if (!fallback || !hasApi(fallback, "openai-codex-responses") || !reviewModel(policy.review, primary, fallback, advertised)) return;
 		}
 		return eligibility.targets;
 	}

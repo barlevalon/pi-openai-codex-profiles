@@ -27,7 +27,7 @@ function success(model: Model<Api>) {
 	stream.end();
 	return stream;
 }
-function fixture(ctx: ExtensionContext, mismatch = false) {
+function fixture(ctx: ExtensionContext, fallbackOverrides: Partial<Model<Api>> = {}) {
 	const root = join(getAgentDir(), "repositories");
 	const cwd = join(root, "checkout");
 	mkdirSync(cwd, { recursive: true });
@@ -48,7 +48,7 @@ function fixture(ctx: ExtensionContext, mismatch = false) {
 		if (provider === "profile-review") return id === primary.id ? advertised : undefined;
 		const model = (provider === "github-copilot" ? copilot : codex).getModels().find(model => model.id === id);
 		if (!model) return undefined;
-		return { ...model, provider, ...(mismatch && provider === "openai-codex:personal" ? { inputLimits: { maxRequestBytes: 1234 } } : {}) };
+		return { ...model, provider, ...(provider === "openai-codex:personal" ? fallbackOverrides : {}) };
 	};
 	const auth: ExtensionContext["modelRegistry"]["getApiKeyAndHeaders"] = async () => { authCalls++; return { ok: true, apiKey: "fixture-destination" }; };
 	const registry = new Proxy(ctx.modelRegistry, { get(target, key, receiver) {
@@ -60,14 +60,15 @@ function fixture(ctx: ExtensionContext, mismatch = false) {
 }
 
 async function reviewOwnership(ctx: ExtensionContext) {
-	for (const mode of ["outside", "unknown", "unowned", "stale", "mismatch", "eligible"]) {
-		const data = fixture(ctx, mode === "mismatch");
+	for (const mode of ["outside", "unknown", "unowned", "stale", "mismatch", "api-mismatch", "eligible"]) {
+		const data = fixture(ctx, mode === "mismatch" ? { inputLimits: { maxRequestBytes: 1234 } }
+			: mode === "api-mismatch" ? { api: "openai-responses" } : {});
 		let current: ExtensionContext | undefined = mode === "unknown" ? undefined : { ...data.ctx, ...(mode === "outside" ? { cwd: getAgentDir() } : {}) };
 		const policy = mode === "unowned" ? parsePolicy({ version: 1, accountOrder: ["personal"], review: { copilotModel: primary.id, codexFallbackModel: fallback.id } }) : data.policy;
 		let sends = 0;
 		const native: typeof copilot = { ...copilot, streamSimple(model, _transcript, options) { sends++; assert.equal(options?.apiKey, "fixture-destination"); return success(model); } };
 		const routing = routingFixture(codex, native, () => current, data.quota, assert.fail, policy);
-		if (["outside", "unknown", "unowned", "mismatch"].includes(mode)) {
+		if (["outside", "unknown", "unowned", "mismatch", "api-mismatch"].includes(mode)) {
 			assert.deepEqual(routing.review.filterModels!(routing.review.getModels(), undefined), []);
 			assert.equal(await routing.review.auth.apiKey!.check!({ ctx: { env: async () => undefined, fileExists: async () => false }, signal: new AbortController().signal }), undefined);
 		}
