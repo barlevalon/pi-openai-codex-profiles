@@ -6,19 +6,25 @@ import { PERSONAL, POLICY, REVIEW, REVIEW_NOTICE, WORK, createNativeRouting } fr
 import { loadPolicy } from "./policy.ts";
 import { reviewContribution, type Contribution } from "./review.ts";
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
 	const { codex, copilot } = nativeProviders();
 	let current: ExtensionContext | undefined;
+	let bootstrapCwd: string | undefined;
 	const notice = (message: string) => {
 		if (current?.hasUI) current.ui.notify(message, "warning");
 		else console.error(message);
 	};
 	const policy = loadPolicy(getAgentDir(), notice);
-	const routing = createNativeRouting(codex, copilot, () => current, createQuotaLedger(join(getAgentDir(), "codex-routing"), notice), notice, policy);
+	if (policy.profiles.some(profile => profile.name === "work")) {
+		const pwd = await pi.exec("pwd", [], { timeout: 2000 }).catch(() => undefined);
+		bootstrapCwd = pwd?.code === 0 ? pwd.stdout.replace(/\r?\n$/, "") || undefined : undefined;
+	}
+	const routing = createNativeRouting(codex, copilot, () => current, createQuotaLedger(join(getAgentDir(), "codex-routing"), notice), notice, policy, () => bootstrapCwd);
 	for (const provider of routing.providers) pi.registerProvider(provider);
 	for (const selection of routing.selections) pi.registerVirtualModel(selection);
 	async function normalize(ctx: ExtensionContext) {
 		current = ctx;
+		bootstrapCwd = undefined;
 		await ctx.modelRegistry.refresh({ allowNetwork: false });
 		if (ctx.model?.provider !== PERSONAL && ctx.model?.provider !== WORK) return;
 		const model = ctx.modelRegistry.find(POLICY, ctx.model.id);
@@ -30,7 +36,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => normalize(ctx));
 	pi.on("model_select", (_event, ctx) => normalize(ctx));
 	pi.on("session_tree", (_event, ctx) => normalize(ctx));
-	pi.on("session_shutdown", () => { current = undefined; });
+	pi.on("session_shutdown", () => { current = undefined; bootstrapCwd = undefined; });
 	let contribution: Contribution = "none";
 	pi.on("before_agent_start", () => { contribution = "none"; });
 	pi.on("message_end", (event, ctx) => {

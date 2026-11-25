@@ -47,16 +47,20 @@ export function createNativeRouting(
 	quota: QuotaLedger,
 	notice: (message: string) => void,
 	policy: Policy,
+	bootstrapCwd: () => string | undefined = () => undefined,
 ) {
 	function context() {
 		const ctx = current();
 		if (!ctx) throw new Error("Codex routing requires an active Pi session");
 		return ctx;
 	}
-	function scope() {
+	function scopeFor(cwd: string | undefined) {
 		const work = policy.profiles.find(profile => profile.name === "work");
-		return work ? repoScope(current()?.cwd, work.criteria) : "unknown";
+		return work ? repoScope(cwd, work.criteria) : "unknown";
 	}
+	function scope() { return scopeFor(current()?.cwd); }
+	function discoveryScope() { return scopeFor(current()?.cwd ?? bootstrapCwd()); }
+	function discoverable(account: ProviderAccount) { return accountEligible(policy, account, discoveryScope()); }
 	function allowed(account: ProviderAccount, repository = accountOwner(policy, account)?.name === "work" ? scope() : "unknown") {
 		return accountEligible(policy, account, repository);
 	}
@@ -112,7 +116,11 @@ export function createNativeRouting(
 		if (!targets) throw new Error("Configured review targets are unavailable or have incompatible capabilities for this profile");
 		return targets;
 	}
-	function reviewAllowed() { return !!derivedReview && reviewTargets(scope()) !== undefined; }
+	function reviewAllowed() {
+		if (!derivedReview) return false;
+		if (!current()) return accountEligible(policy, COPILOT_ACCOUNT, discoveryScope());
+		return reviewTargets(scope()) !== undefined;
+	}
 
 	function openStream<A extends Api, O extends StreamOptions>(
 		source: Model<A>,
@@ -253,8 +261,8 @@ export function createNativeRouting(
 			...codex, id: entry.credential, name: `${codex.name} (${entry === WORK_ACCOUNT ? "work" : "personal"})`,
 			getModels: () => codex.getModels().map(model => ({ ...model, provider: entry.credential })),
 			...(codex.getAllModels ? { getAllModels: () => codex.getAllModels!().map(model => ({ ...model, provider: entry.credential })) } : {}),
-			auth: guardedAuth(codex.auth, () => allowed(entry), () => requireAccount(entry)),
-			...guardedAvailability(codex, () => allowed(entry)), stream, streamSimple,
+			auth: guardedAuth(codex.auth, () => discoverable(entry), () => requireAccount(entry)),
+			...guardedAvailability(codex, () => discoverable(entry)), stream, streamSimple,
 		};
 	}
 	const copilotStream: Provider<CopilotApi>["stream"] = <T extends CopilotApi>(source: Model<T>, transcript: TranscriptContext, options?: ApiStreamOptions<T>) => {
@@ -278,8 +286,8 @@ export function createNativeRouting(
 		}
 	};
 	const protectedCopilot: Provider<CopilotApi> = {
-		...copilot, auth: guardedAuth(copilot.auth, () => allowed(COPILOT_ACCOUNT), () => requireAccount(COPILOT_ACCOUNT)),
-		...guardedAvailability(copilot, () => allowed(COPILOT_ACCOUNT)), stream: copilotStream, streamSimple: copilotSimple, classify,
+		...copilot, auth: guardedAuth(copilot.auth, () => discoverable(COPILOT_ACCOUNT), () => requireAccount(COPILOT_ACCOUNT)),
+		...guardedAvailability(copilot, () => discoverable(COPILOT_ACCOUNT)), stream: copilotStream, streamSimple: copilotSimple, classify,
 	};
 	const review: Provider = {
 		id: REVIEW, name: "Profile review", getModels: () => reviewModels, getAllModels: () => reviewModels,
