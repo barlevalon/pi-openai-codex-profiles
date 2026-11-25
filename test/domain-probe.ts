@@ -154,6 +154,38 @@ function authority() {
 
 async function authScope(ctx: ExtensionContext) {
 	const { root, cwd } = eligibleCheckout();
+	let bootstrapCalls = 0;
+	const denyNative = () => { bootstrapCalls++; assert.fail("Bootstrap discovery must not authorize native credentials or requests"); };
+	const bootstrapAuth = {
+		apiKey: { name: "Fixture", async check() { return { type: "api_key" as const, source: "fixture" }; }, resolve: denyNative },
+		oauth: { ...codex.auth.oauth!, refresh: denyNative, toAuth: denyNative },
+	};
+	const bootstrapPolicy = parsePolicy({ version: 1, accountOrder: ["work", "personal"], copilotProfile: "work", work: { roots: [root] } });
+	const bootstrap = routingFixture(
+		{ ...codex, auth: bootstrapAuth, stream: denyNative, streamSimple: denyNative },
+		{ ...copilot, auth: bootstrapAuth, stream: denyNative, streamSimple: denyNative, classify: denyNative },
+		() => undefined, createQuotaLedger(join(getAgentDir(), "bootstrap-scope"), assert.fail), assert.fail, bootstrapPolicy, () => cwd,
+	);
+	const authInput = { ctx: { async env() { return undefined; }, async fileExists() { return false; } }, signal: new AbortController().signal };
+	const credential = { type: "oauth" as const, access: "fake", refresh: "fake", expires: 4102444800000 };
+	for (const provider of [bootstrap.work, bootstrap.copilot]) {
+		assert.deepEqual(provider.filterModels!(provider.getModels(), undefined), provider.getModels());
+		assert.deepEqual(await provider.auth.apiKey!.check!(authInput), { type: "api_key", source: "fixture" });
+		await assert.rejects(() => provider.auth.apiKey!.resolve(authInput), /restricted/);
+		await assert.rejects(() => provider.auth.oauth!.toAuth(credential), /restricted/);
+		assert.throws(() => provider.auth.oauth!.refresh(credential, authInput.signal), /restricted/);
+	}
+	const transcript = normalizeContext({ messages: [] });
+	for (const callback of [bootstrap.work.stream, bootstrap.work.streamSimple]) {
+		const denied = await callback(fallback, transcript, { apiKey: "fake-explicit" }).result();
+		assert.equal(denied.stopReason, "error");
+		assert.match(denied.errorMessage!, /restricted/);
+	}
+	assert.throws(() => bootstrap.copilot.streamSimple(primary, transcript, { apiKey: "fake-explicit" }), /restricted/);
+	const classification = await bootstrap.copilot.classify!(primary, { state: {}, questions: {} }, { apiKey: "fake-explicit" });
+	assert.equal(classification.stopReason, "error");
+	assert.match(classification.errorMessage!, /restricted/);
+	assert.equal(bootstrapCalls, 0);
 	const outside = getAgentDir();
 	let calls = 0;
 	let authCalls = 0;
