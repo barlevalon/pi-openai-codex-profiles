@@ -59,10 +59,11 @@ export function createNativeRouting(
 		return work ? repoScope(cwd, work.criteria) : "unknown";
 	}
 	function scope() { return scopeFor(current()?.cwd); }
-	function discoveryScope() { return scopeFor(current()?.cwd ?? bootstrapCwd()); }
-	function discoverable(account: ProviderAccount) { return accountEligible(policy, account, discoveryScope()); }
-	function allowed(account: ProviderAccount, repository = accountOwner(policy, account)?.name === "work" ? scope() : "unknown") {
-		return accountEligible(policy, account, repository);
+	function allowed(account: ProviderAccount, repository?: RepoScope, cwd = current()?.cwd) {
+		return accountEligible(policy, account, repository ?? (accountOwner(policy, account)?.name === "work" ? scopeFor(cwd) : "unknown"));
+	}
+	function discoverable(account: ProviderAccount) {
+		return allowed(account, undefined, current()?.cwd ?? bootstrapCwd());
 	}
 	function requireAccount(account: ProviderAccount, repository?: RepoScope) {
 		if (!allowed(account, repository)) throw new Error(`${account.credential} is restricted to its configured eligible profile repositories`);
@@ -118,7 +119,7 @@ export function createNativeRouting(
 	}
 	function reviewAllowed() {
 		if (!derivedReview) return false;
-		if (!current()) return accountEligible(policy, COPILOT_ACCOUNT, discoveryScope());
+		if (!current()) return discoverable(COPILOT_ACCOUNT);
 		return reviewTargets(scope()) !== undefined;
 	}
 
